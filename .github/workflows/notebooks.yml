@@ -1,0 +1,23 @@
+name: notebooks
+
+# Hard guarantee that no notebook with cell outputs lands on the remote, even if
+# a contributor forgot to run `make install-hooks` (the strip filter is local to
+# each clone). `make check` exits nonzero if any tracked *.ipynb carries outputs.
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    name: notebook outputs stripped
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # ubuntu-latest already ships make, bash, and python3 — all `make check`
+      # needs (it shells out to python3 with stdlib json only).
+      - name: make check
+        run: make check
