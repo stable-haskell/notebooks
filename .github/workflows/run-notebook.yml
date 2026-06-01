@@ -1,0 +1,101 @@
+name: run-notebook
+
+# Execute the wasm walkthrough end-to-end on every supported platform, so a
+# broken bindist or channel (e.g. a missing wasi toolchain) fails loudly rather
+# than silently shipping a notebook that doesn't work.
+#
+# Heavy (ghcup + a native GHC + the wasm cross-compiler + wasi-sdk + a cabal
+# build), so not on every push: manual dispatch, a weekly schedule to catch
+# upstream bindist/channel drift, and pushes that touch the notebook itself.
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 6 * * 1"   # Mondays 06:00 UTC
+  push:
+    branches: [master]
+    paths:
+      - "wasm-hello.nb/**"
+      - ".github/workflows/run-notebook.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: run-notebook-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  run:
+    name: ${{ matrix.arch }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-24.04,     arch: x86_64-linux }
+          - { os: ubuntu-24.04-arm, arch: aarch64-linux }
+          - { os: macos-14,         arch: aarch64-darwin }
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      # Runtime libraries the ghcup-installed native build-side GHC links
+      # against. GitHub Linux images ship build-essential; the GHC runtime libs
+      # are the usual gap.
+      - name: System deps (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            build-essential libgmp-dev libnuma1 libtinfo6
+
+      # Apple doesn't ship libgmp; the upstream native GHC bindist needs it.
+      # DYLD_FALLBACK_LIBRARY_PATH is exported to GITHUB_ENV so the notebook
+      # kernel (launched later) inherits it and `ghc` can dlopen libgmp.
+      - name: System deps (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          brew install gmp
+          echo "DYLD_FALLBACK_LIBRARY_PATH=$(brew --prefix)/lib:/usr/lib" >> "$GITHUB_ENV"
+
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@main
+
+      # Minimal ghcup only (the binary at ~/.ghcup/bin/ghcup). The notebook's
+      # §2 installs the native GHC, the wasm cross-compiler, cabal, and wasi-sdk
+      # — exactly what an end user following the landing page does.
+      - name: Install ghcup
+        run: |
+          set -eux
+          curl --proto '=https' --tlsv1.2 -sSf https://get-ghcup.haskell.org | \
+            BOOTSTRAP_HASKELL_NONINTERACTIVE=1 \
+            BOOTSTRAP_HASKELL_MINIMAL=1 \
+            BOOTSTRAP_HASKELL_INSTALL_NO_STACK=1 \
+            sh
+          test -x "$HOME/.ghcup/bin/ghcup"
+
+      - name: Execute the notebook
+        working-directory: wasm-hello.nb
+        run: |
+          set -euo pipefail
+          # Run the real artifact: the flake's JupyterLab + bash kernel.
+          # nbconvert fails the step if any cell's final command exits nonzero.
+          nix develop -c jupyter nbconvert \
+            --to notebook --execute \
+            --ExecutePreprocessor.timeout=3000 \
+            --output executed.ipynb \
+            "WASM Hello.ipynb"
+          # Positive checks: the build + run actually produced their outputs.
+          grep -qF "WebAssembly (wasm) binary module" executed.ipynb \
+            || { echo "::error::wasm verify (§2.5) output missing"; exit 1; }
+          grep -qF "Hello from the WASM reactor!" executed.ipynb \
+            || { echo "::error::run-node greeting (§6) missing"; exit 1; }
+          echo "✓ ${{ matrix.arch }}: notebook executed; build + run produced the expected output"
+
+      - name: Upload executed notebook
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: executed-${{ matrix.arch }}
+          path: wasm-hello.nb/executed.ipynb
+          if-no-files-found: ignore
