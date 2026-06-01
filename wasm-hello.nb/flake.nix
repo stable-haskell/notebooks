@@ -30,8 +30,12 @@
         pkgs.cacert         # TLS roots for curl over HTTPS
         pkgs.nodejs_22      # Node.js 22+ — required by the wasm backend + runner
         pkgs.python3        # `python3 -m http.server` for `make run-web`
+        pkgs.jq             # required by ghc-wasm-meta bootstrap.sh (§2.4)
+        pkgs.unzip          # required by ghc-wasm-meta bootstrap.sh (§2.4)
+        pkgs.file           # `file myapp.wasm` smoke checks
         pkgs.gnutar
         pkgs.gzip
+        pkgs.xz             # ghc-wasm-meta unpacks .tar.xz toolchain tarballs
         pkgs.gnused
         pkgs.gnugrep
         pkgs.findutils
