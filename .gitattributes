@@ -1,0 +1,5 @@
+# Strip Jupyter cell outputs / run data on commit via the `nbstrip` clean filter.
+# Activate it once per clone with `make install-hooks` (git filter config is not
+# cloned, by design). The filter is NOT marked `required`, so a clone that hasn't
+# run install-hooks still checks out the (already-clean) committed notebooks fine.
+*.ipynb filter=nbstrip

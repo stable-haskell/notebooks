@@ -30,6 +30,19 @@ Then open the `.ipynb` and run the cells top to bottom.
 - Notebooks that drive `ghcup` (e.g. `wasm-hello.nb`) assume a system
   [ghcup](https://www.haskell.org/ghcup/); each notebook's intro says so.
 
+## Working on the notebooks
+
+Notebook **outputs are kept out of git**. Git filter config isn't cloned, so
+after cloning activate the strip filter once:
+
+```sh
+make install-hooks
+```
+
+From then on cell outputs are stripped automatically on every commit (your
+working copy keeps its rendered outputs). `make strip` cleans notebooks in
+place; `make check` exits nonzero if any tracked notebook still carries outputs.
+
 ## License
 
 Apache-2.0 — see [`LICENSE`](LICENSE). © Input Output Group.
