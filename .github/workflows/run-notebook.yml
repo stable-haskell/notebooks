@@ -73,6 +73,10 @@ jobs:
       - name: Install ghcup
         run: |
           set -eux
+          # GitHub's x86_64 image preinstalls ghcup and symlinks ~/.ghcup to the
+          # root-owned /usr/local/.ghcup, so the installer's chmod hits EPERM.
+          # Start from a clean $HOME/.ghcup (no-op on images without the preinstall).
+          sudo rm -rf "$HOME/.ghcup"
           export GHCUP_INSTALL_BASE_PREFIX="$HOME"
           echo "GHCUP_INSTALL_BASE_PREFIX=$HOME" >> "$GITHUB_ENV"
           curl --proto '=https' --tlsv1.2 -sSf https://get-ghcup.haskell.org | \
