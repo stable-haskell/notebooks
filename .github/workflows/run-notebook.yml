@@ -49,14 +49,17 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             build-essential libgmp-dev libnuma1 libtinfo6
 
-      # Apple doesn't ship libgmp; the upstream native GHC bindist needs it.
-      # DYLD_FALLBACK_LIBRARY_PATH is exported to GITHUB_ENV so the notebook
-      # kernel (launched later) inherits it and `ghc` can dlopen libgmp.
+      # Apple doesn't ship libgmp, which the upstream native GHC bindist needs.
+      # Symlink it into /usr/local/lib — a default dyld fallback search path — so
+      # `ghc` can dlopen it without DYLD_* env vars (macOS strips those across
+      # some exec boundaries).
       - name: System deps (macOS)
         if: runner.os == 'macOS'
         run: |
           brew install gmp
-          echo "DYLD_FALLBACK_LIBRARY_PATH=$(brew --prefix)/lib:/usr/lib" >> "$GITHUB_ENV"
+          sudo mkdir -p /usr/local/lib
+          sudo ln -sf "$(brew --prefix gmp)/lib/libgmp.10.dylib" /usr/local/lib/libgmp.10.dylib
+          ls -l /usr/local/lib/libgmp.10.dylib
 
       - name: Install Nix
         uses: DeterminateSystems/nix-installer-action@main
@@ -64,9 +67,14 @@ jobs:
       # Minimal ghcup only (the binary at ~/.ghcup/bin/ghcup). The notebook's
       # §2 installs the native GHC, the wasm cross-compiler, cabal, and wasi-sdk
       # — exactly what an end user following the landing page does.
+      #
+      # Force the prefix to $HOME: GitHub's x86_64 image preinstalls ghcup at
+      # root-owned /usr/local/.ghcup, which the installer would fail to chmod.
       - name: Install ghcup
         run: |
           set -eux
+          export GHCUP_INSTALL_BASE_PREFIX="$HOME"
+          echo "GHCUP_INSTALL_BASE_PREFIX=$HOME" >> "$GITHUB_ENV"
           curl --proto '=https' --tlsv1.2 -sSf https://get-ghcup.haskell.org | \
             BOOTSTRAP_HASKELL_NONINTERACTIVE=1 \
             BOOTSTRAP_HASKELL_MINIMAL=1 \
@@ -77,19 +85,25 @@ jobs:
       - name: Execute the notebook
         working-directory: wasm-hello.nb
         run: |
-          set -euo pipefail
+          set -uo pipefail
           # Run the real artifact: the flake's JupyterLab + bash kernel.
-          # nbconvert fails the step if any cell's final command exits nonzero.
+          # allow_errors=True so every cell runs and the executed notebook is
+          # always written (uploaded below for debugging); the marker checks
+          # decide pass/fail.
           nix develop -c jupyter nbconvert \
             --to notebook --execute \
             --ExecutePreprocessor.timeout=3000 \
+            --ExecutePreprocessor.allow_errors=True \
             --output executed.ipynb \
-            "WASM Hello.ipynb"
+            "WASM Hello.ipynb" || true
           # Positive checks: the build + run actually produced their outputs.
+          # (Full per-cell output is in the uploaded executed.ipynb artifact.)
+          miss=
           grep -qF "WebAssembly (wasm) binary module" executed.ipynb \
-            || { echo "::error::wasm verify (§2.5) output missing"; exit 1; }
+            || { echo "::error::wasm verify (§2.5) output missing"; miss=1; }
           grep -qF "Hello from the WASM reactor!" executed.ipynb \
-            || { echo "::error::run-node greeting (§6) missing"; exit 1; }
+            || { echo "::error::run-node greeting (§6) missing"; miss=1; }
+          if [ -n "$miss" ]; then exit 1; fi
           echo "✓ ${{ matrix.arch }}: notebook executed; build + run produced the expected output"
 
       - name: Upload executed notebook
