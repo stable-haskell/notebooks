@@ -1,0 +1,13 @@
+# macOS
+.DS_Store
+
+# Nix / direnv
+.direnv/
+result
+result-*
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Per-notebook build/download artifacts are ignored by each notebook's own
+# .gitignore (e.g. wasm-hello.nb/.gitignore).

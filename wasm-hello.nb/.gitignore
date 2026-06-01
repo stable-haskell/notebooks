@@ -1,0 +1,5 @@
+# Artifacts the walkthrough downloads / builds (kept out of version control).
+stable-haskell-wasm-hello/
+*.tar.gz
+.ipynb_checkpoints/
+.direnv/
