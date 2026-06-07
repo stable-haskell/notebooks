@@ -1,5 +1,6 @@
 # Self-documenting Makefile for the stable-haskell notebooks repo.
 #
+#   make notebook        regenerate generated notebooks from their notebook.py
 #   make install-hooks   activate the git clean filter (run once per clone)
 #   make strip           strip outputs from all notebooks in place
 #   make check           fail if any tracked notebook still has cell outputs
@@ -24,11 +25,25 @@ N := \033[0m
 .PHONY: help
 help:
 	@printf "$(B)stable-haskell notebooks$(N)\n\n"
+	@printf "  $(B)make notebook$(N)       ↻  regenerate notebooks from their notebook.py\n"
 	@printf "  $(B)make install-hooks$(N)  ⚙  activate the git clean filter (run once per clone)\n"
 	@printf "  $(B)make strip$(N)          ✂  strip outputs from all notebooks in place\n"
 	@printf "  $(B)make check$(N)          ✓  fail if any notebook still has cell outputs\n"
 	@printf "\nNotebooks found:\n"
 	@$(FIND) | sed 's#^\./#  • #'
+
+# Regenerate any notebook that has a sibling notebook.py generator. The generator
+# writes the canonical clean form (same as the strip filter), so this never
+# introduces cell outputs.
+.PHONY: notebook
+notebook:
+	@find . -name notebook.py -not -path '*/.ipynb_checkpoints/*' -print0 \
+	  | while IFS= read -r -d '' gen; do \
+	      dir=$$(dirname "$$gen"); \
+	      nb=$$(find "$$dir" -maxdepth 1 -name '*.ipynb' -not -path '*/.ipynb_checkpoints/*' | head -1); \
+	      [ -n "$$nb" ] || nb="$$dir/$$(basename "$$dir" .nb).ipynb"; \
+	      $(PYTHON) "$$gen" "$$nb"; \
+	    done
 
 # Configure the local repo to run the clean filter named in .gitattributes.
 # clean = strip on `git add`; smudge = identity (working tree keeps its outputs).
