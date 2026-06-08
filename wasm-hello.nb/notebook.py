@@ -91,7 +91,7 @@ Edit `MULTI_VERSION` if you install a different build.
 code("wasm-env", r"""
 # Multi-target GHC + cabal versions this walkthrough targets. One bindist ships
 # native + wasm + JS; see the multi-target release channel added in §2.
-export MULTI_VERSION=multi-9.14.0.stable.1
+export MULTI_VERSION=multi-9.14.0.stable.2
 export CABAL_VERSION=3.17.0.0.stable.0
 
 # The template Makefile locates post-link.mjs under
