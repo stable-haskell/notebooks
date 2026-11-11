@@ -1,0 +1,7 @@
+# Build trees and downloads this walkthrough creates (kept out of version control).
+cross-ghc-current/
+executed.ipynb
+.ipynb_checkpoints/
+.direnv/
+result
+result-*

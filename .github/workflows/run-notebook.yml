@@ -24,6 +24,13 @@ concurrency:
   group: run-notebook-${{ github.ref }}
   cancel-in-progress: true
 
+# Shared Nix binary cache (zw3rk) for the notebook flakes' host-side tools.
+env:
+  NIX_CONFIG: |
+    extra-experimental-features = nix-command flakes
+    extra-substituters = https://cache.zw3rk.com
+    extra-trusted-public-keys = loony-tools:pr9m4BkM/5/eSTZlkQyRt57Jz7OMBxNSUiMC4FkcNfk=
+
 jobs:
   run:
     name: ${{ matrix.arch }}
@@ -33,7 +40,7 @@ jobs:
         include:
           - { os: ubuntu-24.04,     arch: x86_64-linux }
           - { os: ubuntu-24.04-arm, arch: aarch64-linux }
-          - { os: macos-14,         arch: aarch64-darwin }
+          - { os: macos-15,         arch: aarch64-darwin }
     runs-on: ${{ matrix.os }}
     timeout-minutes: 60
     steps:
@@ -64,13 +71,46 @@ jobs:
       - name: Install Nix
         uses: DeterminateSystems/nix-installer-action@main
 
+      - name: Enable Nix cache
+        uses: DeterminateSystems/magic-nix-cache-action@main
+
+      # The notebook pins its bindist in §1 (`export MULTI_VERSION=...`,
+      # sourced from notebook.py). The toolchain caches below are keyed on
+      # it, so bumping the bindist cold-starts the caches automatically.
+      - name: Resolve MULTI_VERSION
+        id: versions
+        run: |
+          multi="$(grep -oE 'MULTI_VERSION=[A-Za-z0-9._-]+' wasm-hello.nb/notebook.py | head -1 | cut -d= -f2)"
+          test -n "$multi"
+          echo "multi_version=$multi" >> "$GITHUB_OUTPUT"
+          echo "MULTI_VERSION=$multi"
+
+      # ghcup (native GHC + wasm cross-compiler + cabal), the wasi-sdk the
+      # notebook's §2.4 bootstrap installs (~/.ghc-wasm), and the template's
+      # warmed cabal store — together the ~1 GB of downloads plus the first
+      # build, skipped on repeat runs via an exact MULTI_VERSION key.
+      - name: Restore toolchain caches
+        id: toolchain-cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.ghcup
+            ~/.ghc-wasm
+            wasm-hello.nb/stable-haskell-wasm-hello/dist-newstyle/store
+          key: wasm-hello-${{ runner.os }}-${{ matrix.arch }}-${{ steps.versions.outputs.multi_version }}
+          restore-keys: |
+            wasm-hello-${{ runner.os }}-${{ matrix.arch }}-
+
       # Minimal ghcup only (the binary at ~/.ghcup/bin/ghcup). The notebook's
       # §2 installs the native GHC, the wasm cross-compiler, cabal, and wasi-sdk
       # — exactly what an end user following the landing page does.
       #
       # Force the prefix to $HOME: GitHub's x86_64 image preinstalls ghcup at
       # root-owned /usr/local/.ghcup, which the installer would fail to chmod.
+      # Skipped on a toolchain-cache hit: the cached ~/.ghcup already holds
+      # the bindist-installed GHC/cabal from a previous run.
       - name: Install ghcup
+        if: steps.toolchain-cache.outputs.cache-hit != 'true'
         run: |
           set -eux
           # GitHub's x86_64 image preinstalls ghcup and symlinks ~/.ghcup to the
@@ -85,6 +125,11 @@ jobs:
             BOOTSTRAP_HASKELL_INSTALL_NO_STACK=1 \
             sh
           test -x "$HOME/.ghcup/bin/ghcup"
+
+      # Always in effect (the install step above is skipped on cache hits):
+      # keep ghcup rooted at $HOME for the notebook execution below.
+      - name: Export ghcup prefix
+        run: echo "GHCUP_INSTALL_BASE_PREFIX=$HOME" >> "$GITHUB_ENV"
 
       - name: Execute the notebook
         working-directory: wasm-hello.nb

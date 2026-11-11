@@ -2,7 +2,10 @@ name: notebooks
 
 # Hard guarantee that no notebook with cell outputs lands on the remote, even if
 # a contributor forgot to run `make install-hooks` (the strip filter is local to
-# each clone). `make check` exits nonzero if any tracked *.ipynb carries outputs.
+# each clone). `make check` exits nonzero if any tracked *.ipynb carries outputs
+# or if a notebook.py generator no longer reproduces its sibling .ipynb.
+# The second job guards the generators the other way round: after `make
+# notebook`, the tree must be clean — every generated notebook is committed.
 on:
   push:
     branches: [master]
@@ -21,3 +24,37 @@ jobs:
       # needs (it shells out to python3 with stdlib json only).
       - name: make check
         run: make check
+
+  generators-clean:
+    name: generated notebooks committed
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: make notebook
+        run: make notebook
+      - name: no uncommitted diffs
+        run: git diff --exit-code
+
+  flakes-eval:
+    name: notebook flakes evaluate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@main
+        env:
+          NIX_CONFIG: extra-experimental-features = nix-command flakes
+      - name: Evaluate dev shells
+        env:
+          NIX_CONFIG: extra-experimental-features = nix-command flakes
+        run: |
+          set -euo pipefail
+          for dir in . *.nb; do
+            if [ -f "$dir/flake.nix" ]; then
+              echo "◈ evaluating $dir"
+              (cd "$dir" && nix eval .#devShells.x86_64-linux.default.drvPath)
+              (cd "$dir" && nix eval .#devShells.aarch64-darwin.default.drvPath)
+            fi
+          done
+          nix eval .#devShells.x86_64-linux.ci-cross.drvPath
+          nix eval .#devShells.aarch64-darwin.ci-cross.drvPath

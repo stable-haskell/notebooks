@@ -1,0 +1,7 @@
+# Artifacts the walkthrough downloads / builds (kept out of version control).
+cross-ghc-current/
+.direnv/
+.ipynb_checkpoints/
+result
+result-*
+executed.ipynb

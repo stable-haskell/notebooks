@@ -1,0 +1,676 @@
+name: th-cross-notebooks
+
+# CI for the four source-built Template-Haskell cross notebooks
+# (aarch64-th-cross.nb, js-th-cross.nb, wasm-th-cross.nb,
+# windows-th-cross.nb) on Linux and macOS.
+#
+# Pipeline (aggressive caching at both layers):
+#   plan                  compute the validation matrix per OS and resolve
+#                         the exact (ghc, cabal) commits plus the flake hash
+#                         once for every downstream job.
+#   Stage 1  base-toolchain-linux / base-toolchain-macos
+#                         build the shared GHC 9.14 stage2 +
+#                         cross-aware Cabal once per host platform
+#                         into $HOME/cross-ghc-current (CROSS_ROOT),
+#                         cached by exact (flake, ghc, cabal).
+#   Stage 2  validate-linux / validate-macos
+#           (needs stage 1) restore the base tree + a per-target
+#                         cache, execute each notebook end to end via
+#                         its own flake, and assert the catalogue
+#                         report markers.
+#
+# Heavy (a full GHC source build plus four target SDK/library sets), so not
+# on every push: manual dispatch (with an optional target filter), a weekly
+# schedule to catch upstream GHC/Cabal/SDK drift, and pushes/PRs touching the
+# cross notebooks themselves.
+on:
+  workflow_dispatch:
+    inputs:
+      target:
+        description: 'Which target notebook to validate (default: all)'
+        required: false
+        default: 'all'
+        type: choice
+        options: [all, aarch64, js, wasm, windows]
+      ref:
+        description: 'Repo ref to validate (default: the triggering commit)'
+        required: false
+        default: ''
+  schedule:
+    - cron: "0 5 * * 0"   # Sundays 05:00 UTC
+  push:
+    branches: [master]
+    paths:
+      - "*-th-cross.nb/**"
+      - "flake.nix"
+      - "flake.lock"
+      - ".github/workflows/th-cross-notebooks.yml"
+  pull_request:
+    paths:
+      - "*-th-cross.nb/**"
+      - "flake.nix"
+      - "flake.lock"
+      - ".github/workflows/th-cross-notebooks.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: th-cross-notebooks-${{ github.ref }}
+  cancel-in-progress: true
+
+# Shared Nix config for every job: flakes on, and the zw3rk binary cache so
+# notebook flakes resolve host-side tools without rebuilding the world.
+env:
+  NIX_CONFIG: |
+    extra-experimental-features = nix-command flakes
+    extra-substituters = https://cache.zw3rk.com
+    extra-trusted-public-keys = loony-tools:pr9m4BkM/5/eSTZlkQyRt57Jz7OMBxNSUiMC4FkcNfk=
+
+jobs:
+  # Compute the Stage 2 validation matrices per OS, honouring the optional
+  # workflow_dispatch target filter, and resolve the exact GHC/Cabal commits
+  # plus the flake hash ONCE for every downstream job.
+  plan:
+    name: plan validation matrix
+    runs-on: ubuntu-latest
+    outputs:
+      include: ${{ steps.matrix.outputs.include }}
+      include_linux: ${{ steps.matrix.outputs.include_linux }}
+      include_macos: ${{ steps.matrix.outputs.include_macos }}
+      has_linux: ${{ steps.matrix.outputs.has_linux }}
+      has_macos: ${{ steps.matrix.outputs.has_macos }}
+      ghc_commit: ${{ steps.refs.outputs.ghc_commit }}
+      cabal_commit: ${{ steps.refs.outputs.cabal_commit }}
+      flake_hash: ${{ steps.refs.outputs.flake_hash }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref || github.sha }}
+
+      - id: matrix
+        env:
+          TARGET: ${{ inputs.target }}
+        run: |
+          python3 - <<'PYEOF' >> "$GITHUB_OUTPUT"
+          import json, os
+          entries = [
+            {"target": "aarch64", "dir": "aarch64-th-cross.nb",
+             "ipynb": "AArch64 TH Cross.ipynb",
+             "os": "ubuntu-24.04", "arch": "x86_64-linux",
+             "expected_arch": "aarch64"},
+            {"target": "aarch64", "dir": "aarch64-th-cross.nb",
+             "ipynb": "AArch64 TH Cross.ipynb",
+             "os": "macos-15", "arch": "aarch64-darwin",
+             "expected_arch": "aarch64"},
+            {"target": "js", "dir": "js-th-cross.nb",
+             "ipynb": "JS TH Cross.ipynb",
+             "os": "ubuntu-24.04", "arch": "x86_64-linux",
+             "expected_arch": "javascript"},
+            {"target": "js", "dir": "js-th-cross.nb",
+             "ipynb": "JS TH Cross.ipynb",
+             "os": "macos-15", "arch": "aarch64-darwin",
+             "expected_arch": "javascript"},
+            {"target": "wasm", "dir": "wasm-th-cross.nb",
+             "ipynb": "WASM TH Cross.ipynb",
+             "os": "ubuntu-24.04", "arch": "x86_64-linux",
+             "expected_arch": "wasm32"},
+            {"target": "wasm", "dir": "wasm-th-cross.nb",
+             "ipynb": "WASM TH Cross.ipynb",
+             "os": "macos-15", "arch": "aarch64-darwin",
+             "expected_arch": "wasm32"},
+            {"target": "windows", "dir": "windows-th-cross.nb",
+             "ipynb": "Windows TH Cross.ipynb",
+             "os": "ubuntu-24.04", "arch": "x86_64-linux",
+             "expected_arch": "x86_64"},
+            {"target": "windows", "dir": "windows-th-cross.nb",
+             "ipynb": "Windows TH Cross.ipynb",
+             "os": "macos-15", "arch": "aarch64-darwin",
+             "expected_arch": "x86_64"},
+          ]
+          want = os.environ.get("TARGET") or "all"
+          if want != "all":
+              entries = [e for e in entries if e["target"] == want]
+          assert entries, "unknown target filter: %r" % want
+          linux = [e for e in entries if e["os"].startswith("ubuntu-")]
+          macos = [e for e in entries if e["os"].startswith("macos-")]
+          print("include=" + json.dumps(entries))
+          print("include_linux=" + json.dumps(linux))
+          print("include_macos=" + json.dumps(macos))
+          print("has_linux=" + ("true" if linux else "false"))
+          print("has_macos=" + ("true" if macos else "false"))
+          PYEOF
+
+      - id: refs
+        run: |
+          ghc_commit="$(git ls-remote --heads https://github.com/stable-haskell/ghc.git refs/heads/stable-ghc-9.14 | head -n1 | awk '{print $1}')"
+          cabal_commit="$(git ls-remote --heads https://github.com/andreabedini/cabal.git refs/heads/andrea/feature/cross-compilation-2 | head -n1 | awk '{print $1}')"
+          flake_hash="$(sha256sum flake.lock ./*/flake.lock | sha256sum | cut -c1-16)"
+          test -n "$ghc_commit"
+          test -n "$cabal_commit"
+          test -n "$flake_hash"
+          {
+            echo "ghc_commit=$ghc_commit"
+            echo "cabal_commit=$cabal_commit"
+            echo "flake_hash=$flake_hash"
+          } >> "$GITHUB_OUTPUT"
+          echo "GHC $ghc_commit / Cabal $cabal_commit / flakes $flake_hash"
+
+  # ── Stage 1: shared base toolchain (Linux) ─────────────────────────────
+  # Build the GHC 9.14 stage2 + cross-aware Cabal once on Linux
+  # into $HOME/cross-ghc-current (CROSS_ROOT). validate-linux restores
+  # this tree and adds only per-target libraries/SDKs on top — no second
+  # GHC build.
+  base-toolchain-linux:
+    name: base toolchain (x86_64-linux)
+    runs-on: ubuntu-24.04
+    needs: [plan]
+    if: needs.plan.outputs.has_linux == 'true'
+    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref || github.sha }}
+
+      # A full GHC source build needs room: the stock Linux image spends
+      # most of the disk on toolchains and containers we never touch.
+      - name: Free disk space (Linux)
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android \
+            /opt/ghc /opt/hostedtoolcache /usr/local/share/boost \
+            /usr/share/swift /usr/local/.ghcup 2>/dev/null || true
+          sudo docker image prune --all --force 2>/dev/null || true
+          df -h /
+
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@main
+      - name: Enable Nix cache
+        uses: DeterminateSystems/magic-nix-cache-action@main
+
+      # Bootstrap compiler for the source build (GHC 9.8.4) plus a stock
+      # cabal for the first Cabal build. Cached: reinstalling the bindist
+      # on every run would redo a hundreds-of-MB download for nothing.
+      - name: Restore bootstrap cache
+        id: bootstrap-cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.ghcup
+            ~/.cabal
+          key: th-cross-ghcup-x86_64-linux-ghc-9.8.4
+
+      - name: Install bootstrap GHC + cabal
+        if: steps.bootstrap-cache.outputs.cache-hit != 'true'
+        run: |
+          set -eux
+          sudo rm -rf "$HOME/.ghcup"
+          export GHCUP_INSTALL_BASE_PREFIX="$HOME"
+          echo "GHCUP_INSTALL_BASE_PREFIX=$HOME" >> "$GITHUB_ENV"
+          curl --proto '=https' --tlsv1.2 -sSf https://get-ghcup.haskell.org | \
+            BOOTSTRAP_HASKELL_NONINTERACTIVE=1 \
+            BOOTSTRAP_HASKELL_MINIMAL=1 \
+            BOOTSTRAP_HASKELL_INSTALL_NO_STACK=1 \
+            sh
+          export PATH="$HOME/.ghcup/bin:$PATH"
+          ghcup install ghc 9.8.4
+          ghcup install cabal latest
+          ghcup set ghc 9.8.4
+          test -x "$HOME/.ghcup/bin/ghc-9.8.4"
+
+      - name: Export ghcup env
+        run: |
+          echo "GHCUP_INSTALL_BASE_PREFIX=$HOME" >> "$GITHUB_ENV"
+          echo "$HOME/.ghcup/bin" >> "$GITHUB_PATH"
+          echo "BOOT_GHC=$HOME/.ghcup/bin/ghc-9.8.4" >> "$GITHUB_ENV"
+          echo "BOOT_CABAL=$HOME/.ghcup/bin/cabal" >> "$GITHUB_ENV"
+
+      - name: Restore CROSS_ROOT base cache
+        id: base-cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/cross-ghc-current/cabal-dist
+            ~/cross-ghc-current/ghc-src/_build/dist
+            ~/cross-ghc-current/sources.lock
+            ~/cross-ghc-current/build-sources.lock
+            ~/cross-ghc-current/cabal-boot.patch
+            ~/cross-ghc-current/deriveConstants.path
+            ~/cross-ghc-current/genapply.path
+            ~/cross-ghc-current/ghc-toolchain-bin.path
+          key: th-cross-base-x86_64-linux-${{ needs.plan.outputs.flake_hash }}-${{ needs.plan.outputs.ghc_commit }}-${{ needs.plan.outputs.cabal_commit }}
+
+      # Cache miss: run the base-toolchain cells (env setup, source
+      # checkout, cross-aware Cabal + stage2 GHC build, native tool paths)
+      # inside the unified ci-cross shell. The cells are the source of
+      # truth — extracted by id from the canonical aarch64 notebook — so
+      # CI builds exactly what the walkthrough documents. GHC_REF/CABAL_REF
+      # pin the checkout to the resolved commits the cache key names.
+      - name: Build stage2 GHC + cross-aware Cabal
+        if: steps.base-cache.outputs.cache-hit != 'true'
+        env:
+          # CROSS_ROOT itself defaults to $HOME/cross-ghc-current in the
+          # cells — exactly the tree the cache steps above restore/save.
+          GHC_REF: ${{ needs.plan.outputs.ghc_commit }}
+          CABAL_REF: ${{ needs.plan.outputs.cabal_commit }}
+        run: |
+          set -euo pipefail
+          export CROSS_ROOT="$HOME/cross-ghc-current"
+          python3 - > /tmp/base-steps.sh <<'PYEOF'
+          import json
+          nb = json.load(open("aarch64-th-cross.nb/AArch64 TH Cross.ipynb"))
+          by_id = {c.get("id"): c for c in nb["cells"]}
+          chunks = []
+          for cid in ["cross-02", "cross-07", "cross-08", "cross-12"]:
+              cell = by_id.get(cid)
+              assert cell is not None and cell["cell_type"] == "code", cid
+              src = "".join(cell["source"])
+              assert src.startswith("%%bash\n"), cid
+              chunks.append("# --- cell %s ---\n" % cid + src.split("\n", 1)[1])
+          print("set -euo pipefail")
+          print("\n".join(chunks))
+          PYEOF
+          nix develop .#ci-cross -c bash /tmp/base-steps.sh
+
+  # ── Stage 1: shared base toolchain (macOS) ─────────────────────────────
+  # Same as above, on macOS. Split from Linux so a macOS issue never
+  # blocks Linux validation.
+  base-toolchain-macos:
+    name: base toolchain (aarch64-darwin)
+    runs-on: macos-15
+    needs: [plan]
+    if: needs.plan.outputs.has_macos == 'true'
+    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref || github.sha }}
+
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@main
+      - name: Enable Nix cache
+        uses: DeterminateSystems/magic-nix-cache-action@main
+
+      # Bootstrap compiler for the source build (GHC 9.8.4) plus a stock
+      # cabal for the first Cabal build. Cached: reinstalling the bindist
+      # on every run would redo a hundreds-of-MB download for nothing.
+      - name: Restore bootstrap cache
+        id: bootstrap-cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.ghcup
+            ~/.cabal
+          key: th-cross-ghcup-aarch64-darwin-ghc-9.8.4
+
+      - name: Install bootstrap GHC + cabal
+        if: steps.bootstrap-cache.outputs.cache-hit != 'true'
+        run: |
+          set -eux
+          sudo rm -rf "$HOME/.ghcup"
+          export GHCUP_INSTALL_BASE_PREFIX="$HOME"
+          echo "GHCUP_INSTALL_BASE_PREFIX=$HOME" >> "$GITHUB_ENV"
+          curl --proto '=https' --tlsv1.2 -sSf https://get-ghcup.haskell.org | \
+            BOOTSTRAP_HASKELL_NONINTERACTIVE=1 \
+            BOOTSTRAP_HASKELL_MINIMAL=1 \
+            BOOTSTRAP_HASKELL_INSTALL_NO_STACK=1 \
+            sh
+          export PATH="$HOME/.ghcup/bin:$PATH"
+          ghcup install ghc 9.8.4
+          ghcup install cabal latest
+          ghcup set ghc 9.8.4
+          test -x "$HOME/.ghcup/bin/ghc-9.8.4"
+
+      - name: Export ghcup env
+        run: |
+          echo "GHCUP_INSTALL_BASE_PREFIX=$HOME" >> "$GITHUB_ENV"
+          echo "$HOME/.ghcup/bin" >> "$GITHUB_PATH"
+          echo "BOOT_GHC=$HOME/.ghcup/bin/ghc-9.8.4" >> "$GITHUB_ENV"
+          echo "BOOT_CABAL=$HOME/.ghcup/bin/cabal" >> "$GITHUB_ENV"
+
+      - name: Restore CROSS_ROOT base cache
+        id: base-cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/cross-ghc-current/cabal-dist
+            ~/cross-ghc-current/ghc-src/_build/dist
+            ~/cross-ghc-current/sources.lock
+            ~/cross-ghc-current/build-sources.lock
+            ~/cross-ghc-current/cabal-boot.patch
+            ~/cross-ghc-current/deriveConstants.path
+            ~/cross-ghc-current/genapply.path
+            ~/cross-ghc-current/ghc-toolchain-bin.path
+          key: th-cross-base-aarch64-darwin-${{ needs.plan.outputs.flake_hash }}-${{ needs.plan.outputs.ghc_commit }}-${{ needs.plan.outputs.cabal_commit }}
+
+      # Cache miss: run the base-toolchain cells (env setup, source
+      # checkout, cross-aware Cabal + stage2 GHC build, native tool paths)
+      # inside the unified ci-cross shell. The cells are the source of
+      # truth — extracted by id from the canonical aarch64 notebook — so
+      # CI builds exactly what the walkthrough documents. GHC_REF/CABAL_REF
+      # pin the checkout to the resolved commits the cache key names.
+      - name: Build stage2 GHC + cross-aware Cabal
+        if: steps.base-cache.outputs.cache-hit != 'true'
+        env:
+          # CROSS_ROOT itself defaults to $HOME/cross-ghc-current in the
+          # cells — exactly the tree the cache steps above restore/save.
+          GHC_REF: ${{ needs.plan.outputs.ghc_commit }}
+          CABAL_REF: ${{ needs.plan.outputs.cabal_commit }}
+        run: |
+          set -euo pipefail
+          export CROSS_ROOT="$HOME/cross-ghc-current"
+          python3 - > /tmp/base-steps.sh <<'PYEOF'
+          import json
+          nb = json.load(open("aarch64-th-cross.nb/AArch64 TH Cross.ipynb"))
+          by_id = {c.get("id"): c for c in nb["cells"]}
+          chunks = []
+          for cid in ["cross-02", "cross-07", "cross-08", "cross-12"]:
+              cell = by_id.get(cid)
+              assert cell is not None and cell["cell_type"] == "code", cid
+              src = "".join(cell["source"])
+              assert src.startswith("%%bash\n"), cid
+              chunks.append("# --- cell %s ---\n" % cid + src.split("\n", 1)[1])
+          print("set -euo pipefail")
+          print("\n".join(chunks))
+          PYEOF
+          nix develop .#ci-cross -c bash /tmp/base-steps.sh
+
+  # ── Stage 2: validate each notebook (Linux) ────────────────────────────
+  # Restore the Stage 1 base tree, execute the notebook end to end through
+  # its own flake, and assert the catalogue report markers. Each matrix job
+  # runs on a fresh runner, so per-target state stays isolated; the shared
+  # base cache is read back identically everywhere.
+  validate-linux:
+    name: ${{ matrix.target }} (x86_64-linux)
+    needs: [plan, base-toolchain-linux]
+    runs-on: ubuntu-24.04
+    if: needs.plan.outputs.has_linux == 'true'
+    timeout-minutes: 360
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJson(needs.plan.outputs.include_linux) }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref || github.sha }}
+
+      - name: Free disk space (Linux)
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android \
+            /opt/ghc /opt/hostedtoolcache /usr/local/share/boost \
+            /usr/share/swift /usr/local/.ghcup 2>/dev/null || true
+          sudo docker image prune --all --force 2>/dev/null || true
+          df -h /
+
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@main
+      - name: Enable Nix cache
+        uses: DeterminateSystems/magic-nix-cache-action@main
+
+      - name: Restore bootstrap cache
+        id: bootstrap-cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.ghcup
+            ~/.cabal
+          key: th-cross-ghcup-${{ matrix.arch }}-ghc-9.8.4
+
+      - name: Install bootstrap GHC + cabal
+        if: steps.bootstrap-cache.outputs.cache-hit != 'true'
+        run: |
+          set -eux
+          sudo rm -rf "$HOME/.ghcup"
+          export GHCUP_INSTALL_BASE_PREFIX="$HOME"
+          echo "GHCUP_INSTALL_BASE_PREFIX=$HOME" >> "$GITHUB_ENV"
+          curl --proto '=https' --tlsv1.2 -sSf https://get-ghcup.haskell.org | \
+            BOOTSTRAP_HASKELL_NONINTERACTIVE=1 \
+            BOOTSTRAP_HASKELL_MINIMAL=1 \
+            BOOTSTRAP_HASKELL_INSTALL_NO_STACK=1 \
+            sh
+          export PATH="$HOME/.ghcup/bin:$PATH"
+          ghcup install ghc 9.8.4
+          ghcup install cabal latest
+          ghcup set ghc 9.8.4
+          test -x "$HOME/.ghcup/bin/ghc-9.8.4"
+
+      - name: Export ghcup env
+        run: |
+          echo "GHCUP_INSTALL_BASE_PREFIX=$HOME" >> "$GITHUB_ENV"
+          echo "$HOME/.ghcup/bin" >> "$GITHUB_PATH"
+          echo "BOOT_GHC=$HOME/.ghcup/bin/ghc-9.8.4" >> "$GITHUB_ENV"
+          echo "BOOT_CABAL=$HOME/.ghcup/bin/cabal" >> "$GITHUB_ENV"
+
+      - name: Restore CROSS_ROOT base cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/cross-ghc-current/cabal-dist
+            ~/cross-ghc-current/ghc-src/_build/dist
+            ~/cross-ghc-current/sources.lock
+            ~/cross-ghc-current/build-sources.lock
+            ~/cross-ghc-current/cabal-boot.patch
+            ~/cross-ghc-current/deriveConstants.path
+            ~/cross-ghc-current/genapply.path
+            ~/cross-ghc-current/ghc-toolchain-bin.path
+          key: th-cross-base-${{ matrix.arch }}-${{ needs.plan.outputs.flake_hash }}-${{ needs.plan.outputs.ghc_commit }}-${{ needs.plan.outputs.cabal_commit }}
+
+      # Per-target cache: the target's installed library tree
+      # (stage3-<target>) plus the downloaded SDKs (pinned tarballs in
+      # downloads/, Emscripten, WASI SDK, LLVM-MinGW UCRT, Node, …).
+      # Nonexistent paths are skipped, so targets that do not use a given
+      # tree simply ignore it.
+      - name: Restore per-target cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/cross-ghc-current/stage3-${{ matrix.target }}
+            ~/cross-ghc-current/downloads
+            ~/cross-ghc-current/emsdk
+            ~/cross-ghc-current/em-cache
+            ~/cross-ghc-current/wasm-sdk-dist
+            ~/cross-ghc-current/llvm-mingw-ucrt
+            ~/cross-ghc-current/node-dist-*
+            ~/cross-ghc-current/windows-ffi-ucrt
+          key: th-cross-stage3-${{ matrix.target }}-${{ matrix.arch }}-${{ needs.plan.outputs.flake_hash }}-${{ needs.plan.outputs.ghc_commit }}-${{ needs.plan.outputs.cabal_commit }}
+
+      - name: Execute the notebook
+        working-directory: ${{ matrix.dir }}
+        env:
+          GHC_REF: ${{ needs.plan.outputs.ghc_commit }}
+          CABAL_REF: ${{ needs.plan.outputs.cabal_commit }}
+        run: |
+          set -uo pipefail
+          # The shared base tree restored above; the cells default to this
+          # same path when CROSS_ROOT is unset, set it explicitly anyway.
+          export CROSS_ROOT="$HOME/cross-ghc-current"
+          # Run the real artifact: the notebook's own flake (JupyterLab +
+          # bash kernel), from the notebook directory so the bare ipynb name
+          # resolves — the same shape as wasm-hello.nb CI.
+          # allow_errors=True so every cell runs and the executed notebook is
+          # always written (uploaded below for debugging); the marker checks
+          # decide pass/fail.
+          nix develop . -c jupyter nbconvert \
+            --to notebook --execute \
+            --ExecutePreprocessor.timeout=-1 \
+            --ExecutePreprocessor.allow_errors=True \
+            --output executed.ipynb \
+            "${{ matrix.ipynb }}" || true
+          # Positive checks: the cross report actually spliced, built, and
+          # ran on the target. (Full per-cell output is in the uploaded
+          # executed.ipynb artifact.)
+          miss=
+          for marker in \
+            "SPLICE_ARCH=${{ matrix.expected_arch }}" \
+            "RUNTIME_ARCH=${{ matrix.expected_arch }}" \
+            "century=9261915075" \
+            "large=3428746875" \
+            "ONE_GHC_SHA256="; do
+            grep -qF "$marker" executed.ipynb \
+              || { echo "::error::marker missing: $marker"; miss=1; }
+          done
+          if [ -n "$miss" ]; then exit 1; fi
+          echo "✓ ${{ matrix.target }} (${{ matrix.arch }}): notebook executed; report markers present"
+
+      - name: Upload executed notebook
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: executed-${{ matrix.target }}-${{ matrix.arch }}
+          path: ${{ matrix.dir }}/executed.ipynb
+          if-no-files-found: ignore
+
+  # ── Stage 2: validate each notebook (macOS) ────────────────────────────
+  # Same as above, on macOS. Split from Linux so a macOS issue never
+  # blocks Linux validation.
+  validate-macos:
+    name: ${{ matrix.target }} (aarch64-darwin)
+    needs: [plan, base-toolchain-macos]
+    runs-on: macos-15
+    if: needs.plan.outputs.has_macos == 'true'
+    timeout-minutes: 360
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJson(needs.plan.outputs.include_macos) }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref || github.sha }}
+
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@main
+      - name: Enable Nix cache
+        uses: DeterminateSystems/magic-nix-cache-action@main
+
+      - name: Restore bootstrap cache
+        id: bootstrap-cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.ghcup
+            ~/.cabal
+          key: th-cross-ghcup-${{ matrix.arch }}-ghc-9.8.4
+
+      - name: Install bootstrap GHC + cabal
+        if: steps.bootstrap-cache.outputs.cache-hit != 'true'
+        run: |
+          set -eux
+          sudo rm -rf "$HOME/.ghcup"
+          export GHCUP_INSTALL_BASE_PREFIX="$HOME"
+          echo "GHCUP_INSTALL_BASE_PREFIX=$HOME" >> "$GITHUB_ENV"
+          curl --proto '=https' --tlsv1.2 -sSf https://get-ghcup.haskell.org | \
+            BOOTSTRAP_HASKELL_NONINTERACTIVE=1 \
+            BOOTSTRAP_HASKELL_MINIMAL=1 \
+            BOOTSTRAP_HASKELL_INSTALL_NO_STACK=1 \
+            sh
+          export PATH="$HOME/.ghcup/bin:$PATH"
+          ghcup install ghc 9.8.4
+          ghcup install cabal latest
+          ghcup set ghc 9.8.4
+          test -x "$HOME/.ghcup/bin/ghc-9.8.4"
+
+      - name: Export ghcup env
+        run: |
+          echo "GHCUP_INSTALL_BASE_PREFIX=$HOME" >> "$GITHUB_ENV"
+          echo "$HOME/.ghcup/bin" >> "$GITHUB_PATH"
+          echo "BOOT_GHC=$HOME/.ghcup/bin/ghc-9.8.4" >> "$GITHUB_ENV"
+          echo "BOOT_CABAL=$HOME/.ghcup/bin/cabal" >> "$GITHUB_ENV"
+
+      - name: Restore CROSS_ROOT base cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/cross-ghc-current/cabal-dist
+            ~/cross-ghc-current/ghc-src/_build/dist
+            ~/cross-ghc-current/sources.lock
+            ~/cross-ghc-current/build-sources.lock
+            ~/cross-ghc-current/cabal-boot.patch
+            ~/cross-ghc-current/deriveConstants.path
+            ~/cross-ghc-current/genapply.path
+            ~/cross-ghc-current/ghc-toolchain-bin.path
+          key: th-cross-base-${{ matrix.arch }}-${{ needs.plan.outputs.flake_hash }}-${{ needs.plan.outputs.ghc_commit }}-${{ needs.plan.outputs.cabal_commit }}
+
+      # Per-target cache: the target's installed library tree
+      # (stage3-<target>) plus the downloaded SDKs (pinned tarballs in
+      # downloads/, Emscripten, WASI SDK, LLVM-MinGW UCRT, Node, …).
+      # Nonexistent paths are skipped, so targets that do not use a given
+      # tree simply ignore it.
+      - name: Restore per-target cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/cross-ghc-current/stage3-${{ matrix.target }}
+            ~/cross-ghc-current/downloads
+            ~/cross-ghc-current/emsdk
+            ~/cross-ghc-current/em-cache
+            ~/cross-ghc-current/wasm-sdk-dist
+            ~/cross-ghc-current/llvm-mingw-ucrt
+            ~/cross-ghc-current/node-dist-*
+            ~/cross-ghc-current/windows-ffi-ucrt
+          key: th-cross-stage3-${{ matrix.target }}-${{ matrix.arch }}-${{ needs.plan.outputs.flake_hash }}-${{ needs.plan.outputs.ghc_commit }}-${{ needs.plan.outputs.cabal_commit }}
+
+      - name: Start Linux runner fallback when macOS VM lacks HVF (aarch64)
+        if: matrix.target == 'aarch64'
+        run: |
+          if [ "$(sysctl -n kern.hv_support 2>/dev/null || echo 0)" = "1" ]; then
+            echo "HVF available (kern.hv_support=1) — using hyper-linux (hl) directly"
+            exit 0
+          fi
+          echo "kern.hv_support=0 on this macOS VM — installing cached lima + qemu via Nix and starting Alpine runner"
+          nix profile install nixpkgs#lima nixpkgs#qemu
+          limactl start --name=a64runner --vm-type=qemu --mount-writable --tty=false template://alpine
+          echo "AARCH64_LINUX_VM=a64runner" >> "$GITHUB_ENV"
+
+      - name: Install Wine under Rosetta 2 (windows on macOS)
+        if: matrix.target == 'windows'
+        run: |
+          /usr/sbin/softwareupdate --install-rosetta --agree-to-license || true
+          brew install --cask --no-quarantine wine-stable
+          echo "/Applications/Wine Stable.app/Contents/Resources/wine/bin" >> "$GITHUB_PATH"
+
+      - name: Execute the notebook
+        working-directory: ${{ matrix.dir }}
+        env:
+          GHC_REF: ${{ needs.plan.outputs.ghc_commit }}
+          CABAL_REF: ${{ needs.plan.outputs.cabal_commit }}
+        run: |
+          set -uo pipefail
+          # The shared base tree restored above; the cells default to this
+          # same path when CROSS_ROOT is unset, set it explicitly anyway.
+          export CROSS_ROOT="$HOME/cross-ghc-current"
+          # Run the real artifact: the notebook's own flake (JupyterLab +
+          # bash kernel), from the notebook directory so the bare ipynb name
+          # resolves — the same shape as wasm-hello.nb CI.
+          # allow_errors=True so every cell runs and the executed notebook is
+          # always written (uploaded below for debugging); the marker checks
+          # decide pass/fail.
+          nix develop . -c jupyter nbconvert \
+            --to notebook --execute \
+            --ExecutePreprocessor.timeout=-1 \
+            --ExecutePreprocessor.allow_errors=True \
+            --output executed.ipynb \
+            "${{ matrix.ipynb }}" || true
+          # Positive checks: the cross report actually spliced, built, and
+          # ran on the target. (Full per-cell output is in the uploaded
+          # executed.ipynb artifact.)
+          miss=
+          for marker in \
+            "SPLICE_ARCH=${{ matrix.expected_arch }}" \
+            "RUNTIME_ARCH=${{ matrix.expected_arch }}" \
+            "century=9261915075" \
+            "large=3428746875" \
+            "ONE_GHC_SHA256="; do
+            grep -qF "$marker" executed.ipynb \
+              || { echo "::error::marker missing: $marker"; miss=1; }
+          done
+          if [ -n "$miss" ]; then exit 1; fi
+          echo "✓ ${{ matrix.target }} (${{ matrix.arch }}): notebook executed; report markers present"
+
+      - name: Upload executed notebook
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: executed-${{ matrix.target }}-${{ matrix.arch }}
+          path: ${{ matrix.dir }}/executed.ipynb
+          if-no-files-found: ignore
