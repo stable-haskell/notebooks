@@ -509,8 +509,8 @@ if [[ -x "$DIST/bin/ghc" && -x "$DIST/bin/ghc-pkg" ]] && lock_ok; then
   "$DIST/bin/ghc-pkg" recache
 else
   cd "$GHC_SRC"
-  if ! grep -qE '^(packages|optional-packages):' "$GHC_SRC/cabal.project.stage0"; then
-    printf '\noptional-packages:\n' >> "$GHC_SRC/cabal.project.stage0"
+  if ! grep -q '^optional-packages: \./nonexistent/\*\.cabal' "$GHC_SRC/cabal.project.stage0"; then
+    printf '\noptional-packages: ./nonexistent/*.cabal\n' >> "$GHC_SRC/cabal.project.stage0"
   fi
   "$MAKE_BIN" -j"$BUILD_JOBS" stage2 GHC0="$BOOT_GHC" CABAL0="$BOOT_CABAL" \
     THREADS="$BUILD_JOBS" DYNAMIC=0 CABAL_ARGS="-j$BUILD_JOBS --disable-optimization --ghc-option=-j$GHC_JOBS"

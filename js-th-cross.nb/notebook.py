@@ -405,8 +405,8 @@ else
   # Use GHC's own compiler-build driver and its pinned internal Cabal builder.
   # In particular, do not set CABAL=$CABAL or USE_SYSTEM_CABAL here.
   cd "$GHC_SRC"
-  if ! grep -qE '^(packages|optional-packages):' "$GHC_SRC/cabal.project.stage0"; then
-    printf '\noptional-packages:\n' >> "$GHC_SRC/cabal.project.stage0"
+  if ! grep -q '^optional-packages: \./nonexistent/\*\.cabal' "$GHC_SRC/cabal.project.stage0"; then
+    printf '\noptional-packages: ./nonexistent/*.cabal\n' >> "$GHC_SRC/cabal.project.stage0"
   fi
   "$MAKE_BIN" -j"$BUILD_JOBS" stage2 GHC0="$BOOT_GHC" CABAL0="$BOOT_CABAL" \
     THREADS="$BUILD_JOBS" DYNAMIC=0 CABAL_ARGS="-j$BUILD_JOBS --disable-optimization --ghc-option=-j$GHC_JOBS"
