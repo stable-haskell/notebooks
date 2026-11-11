@@ -287,14 +287,22 @@ SYSROOT=$(find "$WASM_SDK" -path '*share/wasi-sysroot' -maxdepth 5 -type d | hea
 [ -f "$SYSROOT/include/wasm32-wasi/ffi.h" ] || \
   { echo "libffi headers missing from the WASI sysroot ($SYSROOT)" >&2; exit 1; }
 mkbridge() { printf '#!/bin/sh\nexec "%s" "$@"\n' "$2" > "$WASM_SDK/bin/$1"; chmod +x "$WASM_SDK/bin/$1"; }
+mkclang() {
+  cat > "$WASM_SDK/bin/$1" <<EOF
+#!/bin/sh
+unset CPATH C_INCLUDE_PATH CPLUS_INCLUDE_PATH OBJC_INCLUDE_PATH LIBRARY_PATH NIX_CFLAGS_COMPILE NIX_LDFLAGS
+exec "$2" --target=wasm32-unknown-wasi --sysroot="$SYSROOT" -I"$SYSROOT/include/wasm32-wasi" -L"$SYSROOT/lib/wasm32-wasi" "\$@"
+EOF
+  chmod +x "$WASM_SDK/bin/$1"
+}
 llvm_or_sdk() {
   if [ -x "$SDK_BIN/$1" ]; then echo "$SDK_BIN/$1"
   elif [ -x "$SDK_BIN/$2" ]; then echo "$SDK_BIN/$2"
   else command -v "$1"
   fi
 }
-mkbridge wasm32-unknown-wasi-clang "$SDK_BIN/clang"
-mkbridge wasm32-unknown-wasi-clang++ "$SDK_BIN/clang++"
+mkclang wasm32-unknown-wasi-clang "$SDK_BIN/clang"
+mkclang wasm32-unknown-wasi-clang++ "$SDK_BIN/clang++"
 mkbridge wasm32-unknown-wasi-ar "$(llvm_or_sdk llvm-ar ar)"
 mkbridge wasm32-unknown-wasi-ranlib "$(llvm_or_sdk llvm-ranlib ranlib)"
 mkbridge wasm32-unknown-wasi-nm "$(llvm_or_sdk llvm-nm nm)"

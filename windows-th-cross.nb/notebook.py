@@ -364,6 +364,10 @@ export MVK_CONFIG_LOG_LEVEL=0
 mkdir -p "$WINEPREFIX"
 "$WINE_BIN" wineboot --init </dev/null
 "${WINE_BIN%/*}/wineserver" -k 2>/dev/null || wineserver -k 2>/dev/null || true
+mkdir -p "$WINEPREFIX/drive_c/windows/system32"
+for dll in "$LLVM_MINGW/x86_64-w64-mingw32/bin"/*.dll; do
+  [[ -f "$dll" ]] && cp -f "$dll" "$WINEPREFIX/drive_c/windows/system32/"
+done
 echo "Wine prefix ready at $WINEPREFIX"
 """)
 
@@ -1005,7 +1009,33 @@ ISERV_SRC="$CROSS_ROOT/iserv-proxy-src"
 if [[ ! -d "$ISERV_SRC/.git" ]]; then
   git clone --branch iserv-syms https://github.com/stable-haskell/iserv-proxy.git "$ISERV_SRC"
 fi
+git -C "$ISERV_SRC" checkout -- .
 git -C "$ISERV_SRC" rev-parse HEAD
+
+# Ensure the Windows interpreter initializes the RTS object linker and loads
+# ucrtbase.dll onto the head of opened_dlls before msvcrt.dll, so __imp_*
+# CRT symbols in ghc-internal (such as __imp__fstati64) resolve against UCRT.
+python3 - "$ISERV_SRC/src/IServ/Remote/Interpreter.hs" <<'PY_ISERV_UCRT'
+import pathlib, sys
+p = pathlib.Path(sys.argv[1])
+src = p.read_text()
+imp = "import GHCi.ResolvedBCO\n"
+imp_patch = imp + "#if defined(mingw32_HOST_OS)\nimport GHCi.ObjLink (initObjLinker, ShouldRetainCAFs(..), loadDLL)\n#endif\n"
+assert imp in src, "expected GHCi.ResolvedBCO import"
+src = src.replace(imp, imp_patch, 1)
+target = "  uninterruptibleMask $ serv verbose (hook verbose noLoadCall base_path pipe) pipe"
+replacement = (
+    "#if defined(mingw32_HOST_OS)\n"
+    "  initObjLinker RetainCAFs\n"
+    "  _ <- loadDLL \"ucrtbase.dll\"\n"
+    "#endif\n"
+    + target
+)
+assert target in src, "expected serv call in Interpreter.hs"
+src = src.replace(target, replacement)
+p.write_text(src)
+print("Patched IServ.Remote.Interpreter to preload ucrtbase.dll on Windows")
+PY_ISERV_UCRT
 
 mkdir -p "$CROSS_ROOT/proxy-native"
 cat > "$CROSS_ROOT/proxy-native/cabal.project" << PROJECT
