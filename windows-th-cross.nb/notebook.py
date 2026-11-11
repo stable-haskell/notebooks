@@ -308,6 +308,7 @@ fi
 # On darwin, check the Wine app bundles and fall back to the Homebrew cask.
 WINE_BIN=${WINE:-$(command -v wine64 || command -v wine || true)}
 if [[ -z "${WINE_BIN:-}" && "$BUILD_OS" == "darwin" ]]; then
+  /usr/sbin/softwareupdate --install-rosetta --agree-to-license 2>/dev/null || true
   for wine_dir in "/Applications/Wine Stable.app/Contents/Resources/wine/bin" "/Applications/Wine Crossover.app/Contents/SharedSupport/wine/bin"; do
     if [[ -x "$wine_dir/wine64" ]]; then
       export PATH="$wine_dir:$PATH"
@@ -320,10 +321,11 @@ if [[ -z "${WINE_BIN:-}" && "$BUILD_OS" == "darwin" ]]; then
     fi
   done
   if [[ -z "${WINE_BIN:-}" ]] && command -v brew >/dev/null 2>&1; then
-    brew install --cask --no-quarantine wine-stable
+    brew install --cask wine-stable
     export PATH="/Applications/Wine Stable.app/Contents/Resources/wine/bin:$PATH"
     WINE_BIN=$(command -v wine64 || command -v wine || true)
   fi
+  xattr -dr com.apple.quarantine "/Applications/Wine Stable.app" 2>/dev/null || true
 fi
 [[ -n "${WINE_BIN:-}" && -x "$WINE_BIN" ]] || {
   echo "No wine64/wine on PATH; enter this notebook's flake dev shell (Wine ships per platform there)." >&2; exit 1; }

@@ -626,7 +626,8 @@ jobs:
         if: matrix.target == 'windows'
         run: |
           /usr/sbin/softwareupdate --install-rosetta --agree-to-license || true
-          brew install --cask --no-quarantine wine-stable
+          brew install --cask wine-stable
+          xattr -dr com.apple.quarantine "/Applications/Wine Stable.app" 2>/dev/null || true
           echo "/Applications/Wine Stable.app/Contents/Resources/wine/bin" >> "$GITHUB_PATH"
 
       - name: Execute the notebook
