@@ -24,6 +24,15 @@
       # and runs the final `.jsexe/all.js` bundle. llvm-objdump/llvm-nm back
       # the target configure step; gmp/libffi/zlib/ncurses are the native
       # compiler's C dependencies (patchelf only exists on Linux).
+      # Nixpkgs' emscripten wrapper exposes emcc/em++/emar/emranlib in bin/
+      # but leaves emnm in share/emscripten/emnm; wrap it with the same
+      # EM_CACHE-Exporting launcher as emcc.
+      emnmWrapper = pkgs.runCommand "emnm-wrapper" {} ''
+        mkdir -p "$out/bin"
+        sed 's|/share/emscripten/emcc|/share/emscripten/emnm|' "${pkgs.emscripten}/bin/emcc" > "$out/bin/emnm"
+        chmod +x "$out/bin/emnm"
+      '';
+
       runtimeTools = [
         pkgs.stdenv.cc
         pkgs.bash
@@ -49,7 +58,8 @@
         pkgs.findutils
         pkgs.which
         pkgs.nodejs_22 # Node.js 22+ — required by the JS backend + runner
-        pkgs.emscripten # emcc, em++, emar, emranlib, emnm
+        pkgs.emscripten # emcc, em++, emar, emranlib
+        emnmWrapper # emnm
         pkgs.llvmPackages.llvm # llvm-objdump / llvm-nm for the target configure step
         pkgs.gmp
         pkgs.libffi
@@ -72,7 +82,7 @@
       pkgconfigpath = pkgs.lib.makeSearchPathOutput "dev" "lib/pkgconfig" libDevs;
 
       kernelEnv = {
-        PATH = "${runtimeBin}:/usr/bin:/bin:/usr/local/bin";
+        PATH = "${runtimeBin}:/usr/bin:/bin:/usr/sbin:/sbin:/usr/local/bin";
         CURL_CA_BUNDLE = caBundle;
         SSL_CERT_FILE = caBundle;
         EM_CACHE = emCacheDefault;

@@ -116,6 +116,7 @@ use separate trees.
 code("win-env", r"""
 %%bash
 set -euo pipefail
+export PATH="$PATH:/usr/sbin:/sbin"
 fail() { echo "$*" >&2; exit 1; }
 
 UNAME_S=$(uname -s); UNAME_M=$(uname -m)
@@ -177,8 +178,12 @@ cross_enter() {
   set -euo pipefail
   cd "$CROSS_ROOT"
   unset CC CXX AR RANLIB
+  export PATH="$PATH:/usr/sbin:/sbin"
   if [[ -d "$HOME/.ghcup/bin" && ":$PATH:" != *":$HOME/.ghcup/bin:"* ]]; then
     export PATH="$HOME/.ghcup/bin:$PATH"
+  fi
+  if [[ -n "${LLVM_MINGW:-}" && -d "$LLVM_MINGW/bin" && ":$PATH:" != *":$LLVM_MINGW/bin:"* ]]; then
+    export PATH="$LLVM_MINGW/bin:$PATH"
   fi
 }
 EOF
@@ -297,9 +302,11 @@ PY_FFI
   CXX="$LLVM_MINGW/bin/x86_64-w64-mingw32-clang++" \
   AR="$LLVM_MINGW/bin/x86_64-w64-mingw32-ar" \
   RANLIB="$LLVM_MINGW/bin/x86_64-w64-mingw32-ranlib" \
+  NM="$LLVM_MINGW/bin/x86_64-w64-mingw32-nm" \
     ./configure --host=x86_64-w64-mingw32 --disable-shared --enable-static --prefix="$FFI_PREFIX"
   make -j"$BUILD_JOBS"
   make install
+  [[ -f "$FFI_PREFIX/lib/libffi.a" ]] || cp "$FFI_PREFIX/lib/libffi.lib" "$FFI_PREFIX/lib/libffi.a"
   [[ -f "$FFI_PREFIX/lib/libffi.a" ]]
   echo "UCRT libffi installed at $FFI_PREFIX"
 fi
@@ -546,6 +553,7 @@ if [[ ! -f "$SRC/libraries/ghc-internal/configure" ]]; then
   ( cd "$SRC/libraries/ghc-internal" && autoreconf -i )
 fi
 
+git -C "$SRC" checkout -- rts/rts.cabal 2>/dev/null || true
 python3 - "$SRC/rts/rts.cabal" <<'PY_PATCH'
 import re, sys
 from pathlib import Path
@@ -605,6 +613,7 @@ toolbin=$(cat "$CROSS_ROOT/ghc-toolchain-bin.path")
 
 target_lib="$DIST/lib/targets/x86_64-w64-mingw32/lib"
 mkdir -p "$target_lib"
+export PATH="$LLVM_MINGW/bin:$PATH"
 cd "$SRC"
 "$toolbin" \
   --triple x86_64-w64-mingw32 \
@@ -614,6 +623,7 @@ cd "$SRC"
   --ar "$LLVM_MINGW/bin/x86_64-w64-mingw32-ar" \
   --ranlib "$LLVM_MINGW/bin/x86_64-w64-mingw32-ranlib" \
   --nm "$LLVM_MINGW/bin/x86_64-w64-mingw32-nm" \
+  --windres "$LLVM_MINGW/bin/x86_64-w64-mingw32-windres" \
   --disable-ld-override \
   --output-settings \
   -o "$target_lib/settings"

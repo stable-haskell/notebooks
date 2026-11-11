@@ -94,6 +94,7 @@ The native GHC source and target-library source use separate trees. We will leav
 code("js-gate", r"""
 %%bash
 set -euo pipefail
+export PATH="$PATH:/usr/sbin:/sbin"
 fail() { echo "$*" >&2; exit 1; }
 case "$(uname -s)" in
   Linux) BUILD_OS=linux; BUILD_VENDOR=unknown ;;
@@ -134,7 +135,15 @@ fi
 if (( mem_mib < 16*1024 )); then
   echo "Less than 16 GiB RAM: the full compiler build may need more memory or swap." >&2
 fi
-if [[ -n "${MAKE_BIN:-}" ]]; then :; elif command -v gmake >/dev/null; then MAKE_BIN=gmake; else MAKE_BIN=make; fi
+if [[ -n "${MAKE_BIN:-}" ]]; then
+  :
+elif command -v make >/dev/null && python3 -c 'import sys; v=sys.argv[1].split("."); raise SystemExit(0 if (int(v[0]),int(v[1]))>=(4,4) else 1)' "$(make --version 2>/dev/null | awk 'NR==1{print $3}')" 2>/dev/null; then
+  MAKE_BIN=make
+elif command -v gmake >/dev/null; then
+  MAKE_BIN=gmake
+else
+  MAKE_BIN=make
+fi
 printf '%s\n' "$CROSS_ROOT" > "$HOME/.cross-ghc-js-root"
 {
   printf 'CROSS_ROOT=%q\n' "$CROSS_ROOT"
@@ -161,8 +170,15 @@ cross_enter() {
   set -euo pipefail
   cd "$CROSS_ROOT"
   unset CC CXX AR RANLIB
+  export PATH="$PATH:/usr/sbin:/sbin"
   if [[ -d "$HOME/.ghcup/bin" && ":$PATH:" != *":$HOME/.ghcup/bin:"* ]]; then
     export PATH="$HOME/.ghcup/bin:$PATH"
+  fi
+  if [[ -d "$CROSS_ROOT/bin" && ":$PATH:" != *":$CROSS_ROOT/bin:"* ]]; then
+    export PATH="$CROSS_ROOT/bin:$PATH"
+  fi
+  if [[ -d "$CROSS_ROOT/emsdk/upstream/emscripten" && ":$PATH:" != *":$CROSS_ROOT/emsdk/upstream/emscripten:"* ]]; then
+    export PATH="$CROSS_ROOT/emsdk/upstream/emscripten:$PATH"
   fi
 }
 sha256_file() {
@@ -192,6 +208,18 @@ ROOT=$(cat "$HOME/.cross-ghc-js-root")
 source "$ROOT/gate-js.env"
 cross_enter
 export EM_CACHE
+
+if ! command -v emnm >/dev/null && command -v emcc >/dev/null; then
+  mkdir -p "$CROSS_ROOT/bin"
+  emcc_path=$(command -v emcc)
+  if grep -q '/share/emscripten/emcc' "$emcc_path" 2>/dev/null; then
+    sed 's|/share/emscripten/emcc|/share/emscripten/emnm|' "$emcc_path" > "$CROSS_ROOT/bin/emnm"
+    chmod +x "$CROSS_ROOT/bin/emnm"
+  elif command -v llvm-nm >/dev/null; then
+    ln -sfn "$(command -v llvm-nm)" "$CROSS_ROOT/bin/emnm"
+  fi
+  export PATH="$CROSS_ROOT/bin:$PATH"
+fi
 
 missing=()
 for t in emcc em++ emar emranlib emnm; do
@@ -468,6 +496,7 @@ if [[ ! -f "$SRC/libraries/ghc-internal/configure" ]]; then
   ( cd "$SRC/libraries/ghc-internal" && autoreconf -i )
 fi
 
+git -C "$SRC" checkout -- rts/rts.cabal 2>/dev/null || true
 python3 - "$SRC/rts/rts.cabal" <<'PY_PATCH'
 import re, sys
 from pathlib import Path
@@ -484,7 +513,7 @@ for name in ("threaded-nodebug", "nonthreaded-debug", "threaded-debug"):
         block, count = re.subn(r"(?m)^(    import:.*\n)", r"\1    buildable: False\n", block, count=1)
         if count != 1:
             raise SystemExit(f"Unexpected import layout: {name}")
-        text = text[:match.start()] + block + text[match.end()]
+        text = text[:match.start()] + block + text[match.end():]
     assert re.search(rf"(?m)^library {name}\n    import:[^\n]*\n    buildable: False$", text)
 path.write_text(text)
 print("Only the vanilla RTS sublibrary remains buildable.")

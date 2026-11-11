@@ -15,6 +15,7 @@ on:
     branches: [master]
     paths:
       - "wasm-hello.nb/**"
+      - "tools/**"
       - ".github/workflows/run-notebook.yml"
 
 permissions:
@@ -44,7 +45,7 @@ jobs:
     runs-on: ${{ matrix.os }}
     timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       # Runtime libraries the ghcup-installed native build-side GHC links
       # against. GitHub Linux images ship build-essential; the GHC runtime libs
@@ -69,10 +70,12 @@ jobs:
           ls -l /usr/local/lib/libgmp.10.dylib
 
       - name: Install Nix
-        uses: DeterminateSystems/nix-installer-action@main
-
-      - name: Enable Nix cache
-        uses: DeterminateSystems/magic-nix-cache-action@main
+        uses: cachix/install-nix-action@v31
+        with:
+          extra_nix_config: |
+            extra-experimental-features = nix-command flakes
+            extra-substituters = https://cache.zw3rk.com
+            extra-trusted-public-keys = loony-tools:pr9m4BkM/5/eSTZlkQyRt57Jz7OMBxNSUiMC4FkcNfk=
 
       # The notebook pins its bindist in §1 (`export MULTI_VERSION=...`,
       # sourced from notebook.py). The toolchain caches below are keyed on
@@ -91,7 +94,7 @@ jobs:
       # build, skipped on repeat runs via an exact MULTI_VERSION key.
       - name: Restore toolchain caches
         id: toolchain-cache
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: |
             ~/.ghcup
@@ -137,28 +140,30 @@ jobs:
           set -uo pipefail
           # Run the real artifact: the flake's JupyterLab + bash kernel.
           # allow_errors=True so every cell runs and the executed notebook is
-          # always written (uploaded below for debugging); the marker checks
-          # decide pass/fail.
+          # always written (uploaded below for debugging); verify-and-render-notebook.py
+          # verifies cell error status, checks stdout markers, and renders the
+          # visual walkthrough to $GITHUB_STEP_SUMMARY.
           nix develop -c jupyter nbconvert \
             --to notebook --execute \
             --ExecutePreprocessor.timeout=3000 \
             --ExecutePreprocessor.allow_errors=True \
             --output executed.ipynb \
             "WASM Hello.ipynb" || true
-          # Positive checks: the build + run actually produced their outputs.
-          # (Full per-cell output is in the uploaded executed.ipynb artifact.)
-          miss=
-          grep -qF "WebAssembly (wasm) binary module" executed.ipynb \
-            || { echo "::error::wasm verify (§2.5) output missing"; miss=1; }
-          grep -qF "Hello from the WASM reactor!" executed.ipynb \
-            || { echo "::error::run-node greeting (§6) missing"; miss=1; }
-          if [ -n "$miss" ]; then exit 1; fi
-          echo "✓ ${{ matrix.arch }}: notebook executed; build + run produced the expected output"
+          nix develop -c jupyter nbconvert \
+            --to html \
+            --output executed.html \
+            executed.ipynb || true
+          python3 ../tools/verify-and-render-notebook.py executed.ipynb \
+            --title "WASM Hello (${{ matrix.arch }})" \
+            --marker "WebAssembly (wasm) binary module" \
+            --marker "Hello from the WASM reactor!"
 
-      - name: Upload executed notebook
+      - name: Upload executed notebook (HTML & ipynb)
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: executed-${{ matrix.arch }}
-          path: wasm-hello.nb/executed.ipynb
+          path: |
+            wasm-hello.nb/executed.html
+            wasm-hello.nb/executed.ipynb
           if-no-files-found: ignore

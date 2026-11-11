@@ -99,6 +99,7 @@ The native GHC source and target-library source use separate trees. We will leav
 
 code("cross-02", r"""
 set -euo pipefail
+export PATH="$HOME/.nix-profile/bin:$HOME/.local/state/nix/profiles/profile/bin:$PATH:/usr/sbin:/sbin"
 fail() { echo "$*" >&2; exit 1; }
 UNAME_S=$(uname -s)
 UNAME_M=$(uname -m)
@@ -209,6 +210,7 @@ cross_enter() {
   set -euo pipefail
   cd "$CROSS_ROOT"
   unset CC CXX AR RANLIB
+  export PATH="$HOME/.nix-profile/bin:$HOME/.local/state/nix/profiles/profile/bin:$PATH:/usr/sbin:/sbin"
   if [[ -d "$HOME/.ghcup/bin" && ":$PATH:" != *":$HOME/.ghcup/bin:"* ]]; then
     export PATH="$HOME/.ghcup/bin:$PATH"
   fi
@@ -340,6 +342,7 @@ cat > "$CROSS_ROOT/bin/aarch64-linux-run" <<'RUNNER_EOF'
 #!/bin/bash
 # Execute an AArch64 Linux binary from the build machine.
 set -euo pipefail
+export PATH="$HOME/.nix-profile/bin:$HOME/.local/state/nix/profiles/profile/bin:/nix/var/nix/profiles/default/bin:$PATH:/usr/sbin:/sbin"
 ROOT=$(cat "$HOME/.cross-ghc-aarch64-root" 2>/dev/null || cat "$HOME/.cross-ghc-root")
 # shellcheck disable=SC1091
 if [[ -f "$ROOT/gate-aarch64.env" ]]; then source "$ROOT/gate-aarch64.env"; else source "$ROOT/gate.env"; fi
@@ -622,6 +625,7 @@ if [[ ! -f "$SRC/libraries/ghc-internal/configure" ]]; then
   ( cd "$SRC/libraries/ghc-internal" && autoreconf -i )
 fi
 
+git -C "$SRC" checkout -- rts/rts.cabal 2>/dev/null || true
 python3 - "$SRC/rts/rts.cabal" <<'PY_PATCH'
 import re, sys
 from pathlib import Path
@@ -638,7 +642,7 @@ for name in ("threaded-nodebug", "nonthreaded-debug", "threaded-debug"):
         block, count = re.subn(r"(?m)^(    import:.*\n)", r"\1    buildable: False\n", block, count=1)
         if count != 1:
             raise SystemExit(f"Unexpected import layout: {name}")
-        text = text[:match.start()] + block + text[match.end()]
+        text = text[:match.start()] + block + text[match.end():]
     assert re.search(rf"(?m)^library {name}\n    import:[^\n]*\n    buildable: False$", text)
 path.write_text(text)
 print("Only the vanilla RTS sublibrary remains buildable.")

@@ -95,7 +95,7 @@
       aarch64Readelf = "${a64Musl.stdenv.cc}/bin/${aarch64Prefix}readelf";
 
       kernelEnv = {
-        PATH = "${runtimeBin}:/usr/bin:/bin:/usr/local/bin";
+        PATH = "${runtimeBin}:/usr/bin:/bin:/usr/sbin:/sbin:/usr/local/bin";
         CURL_CA_BUNDLE = caBundle;
         SSL_CERT_FILE = caBundle;
         CPATH = cpath;
@@ -148,7 +148,7 @@
       devShells.default = pkgs.mkShell {
         packages = [ jupyterlab ] ++ runtimeTools;
         shellHook = ''
-          export PATH="${runtimeBin}:/usr/bin:/bin:/usr/local/bin:$PATH"
+          export PATH="${runtimeBin}:/usr/bin:/bin:/usr/sbin:/sbin:/usr/local/bin:$PATH"
           export CURL_CA_BUNDLE="${caBundle}"
           export SSL_CERT_FILE="${caBundle}"
           export CPATH="${cpath}"

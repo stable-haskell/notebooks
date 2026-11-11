@@ -103,6 +103,7 @@ identity check below.
 code("wasm-th-gate", r"""
 %%bash
 set -euo pipefail
+export PATH="$PATH:/usr/sbin:/sbin"
 fail() { echo "$*" >&2; exit 1; }
 OS=$(uname -s); M=$(uname -m)
 case "$OS" in
@@ -162,6 +163,7 @@ cross_enter() {
   set -euo pipefail
   cd "$CROSS_ROOT"
   unset CC CXX AR RANLIB
+  export PATH="$PATH:/usr/sbin:/sbin"
   if [[ -d "$HOME/.ghcup/bin" && ":$PATH:" != *":$HOME/.ghcup/bin:"* ]]; then
     export PATH="$HOME/.ghcup/bin:$PATH"
   fi
@@ -205,8 +207,19 @@ ROOT=$(cat "$HOME/.cross-ghc-wasm-root")
 source "$ROOT/gate-wasm.env"
 cross_enter
 mkdir -p "$WASM_SDK/bin" "$WASM_SDK/downloads"
-WASI_URL=https://github.com/haskell-wasm/ghc-wasm-bindists/releases/download/20251219T213239/wasi-sdk.tar.gz
-WASI_SHA='+hsjbYR/pqtavssIuMGAcXiBj2izMCmEXrFRV9W9vkc='
+case "$BUILD_OS/$BUILD_ARCH" in
+  linux/x86_64)
+    WASI_ARCHIVE="wasi-sdk.tar.gz"
+    WASI_SHA='+hsjbYR/pqtavssIuMGAcXiBj2izMCmEXrFRV9W9vkc=' ;;
+  linux/aarch64)
+    WASI_ARCHIVE="wasi-sdk-aarch64-linux.tar.gz"
+    WASI_SHA='GAUk09LQXgF4YFo33BMUbUf/szWBrhQiIuqdoj6r9IQ=' ;;
+  darwin/*)
+    WASI_ARCHIVE="wasi-sdk-aarch64-darwin.tar.gz"
+    WASI_SHA='/NgLdK8gyPTy+Xg4UmINuOgO188/0WLnYAGIGfp94ro=' ;;
+  *) echo "Unsupported build platform: $BUILD_OS/$BUILD_ARCH" >&2; exit 1 ;;
+esac
+WASI_URL="https://github.com/haskell-wasm/ghc-wasm-bindists/releases/download/20251219T213239/$WASI_ARCHIVE"
 LIBFFI_URL=https://github.com/haskell-wasm/ghc-wasm-bindists/releases/download/20250310T060803/libffi-wasm
 LIBFFI_SHA='Um9Gcu9zKl0pzFYL3RmAnyFJozOPKVoq1NnU2jilI0s='
 fetch() {
@@ -221,11 +234,12 @@ assert base64.b64decode(sys.argv[2]) == d, 'hash mismatch for ' + sys.argv[1]
 PY
 }
 install_pinned() {
-  fetch "$WASI_URL" wasi-sdk.tar.gz
-  check_b64 wasi-sdk.tar.gz "$WASI_SHA"
-  if [ ! -d "$WASM_SDK/wasi-sdk" ]; then
+  fetch "$WASI_URL" "$WASI_ARCHIVE"
+  check_b64 "$WASI_ARCHIVE" "$WASI_SHA"
+  if [ ! -x "$WASM_SDK/wasi-sdk/bin/clang" ]; then
+    rm -rf "$WASM_SDK/wasi-sdk"
     mkdir -p "$WASM_SDK/wasi-sdk"
-    tar --no-same-owner -xzf "$WASM_SDK/downloads/wasi-sdk.tar.gz" \
+    tar --no-same-owner -xzf "$WASM_SDK/downloads/$WASI_ARCHIVE" \
       -C "$WASM_SDK/wasi-sdk" --strip-components=1
   fi
   fetch "$LIBFFI_URL" libffi-wasm
@@ -252,13 +266,10 @@ install_bootstrap() {
   command -v jq >/dev/null || { echo "jq missing (this flake provides it)" >&2; exit 1; }
   command -v unzip >/dev/null || { echo "unzip missing (this flake provides it)" >&2; exit 1; }
   curl -fsSL https://gitlab.haskell.org/ghc/ghc-wasm-meta/-/raw/master/bootstrap.sh | \
-    FLAVOUR=9.12 PREFIX="$WASM_SDK" sh
+    FLAVOUR=9.12 SKIP_GHC=1 PREFIX="$WASM_SDK/.ghc-wasm" sh
+  mkdir -p "$WASM_SDK/bin" "$WASM_SDK/downloads"
 }
-if [ "$BUILD_OS/$BUILD_ARCH" = linux/x86_64 ]; then
-  install_pinned || install_bootstrap
-else
-  install_bootstrap
-fi
+install_pinned || install_bootstrap
 # Locate the SDK's clang dir (layout differs between the pinned archive and
 # bootstrap.sh) and bridge the wasm32-unknown-wasi-* names GHC expects, plus
 # the LLVM tools from PATH (this flake's llvm/lld) with SDK fallback.
@@ -271,10 +282,10 @@ if [ -z "$SDK_BIN" ]; then
   [ -n "$found" ] && SDK_BIN=$(dirname "$found")
 fi
 [ -n "$SDK_BIN" ] || { echo "clang not found under $WASM_SDK" >&2; exit 1; }
-SYSROOT=$(dirname "$(find "$WASM_SDK" -path '*share/wasi-sysroot' -maxdepth 5 -type d | head -1)")
+SYSROOT=$(find "$WASM_SDK" -path '*share/wasi-sysroot' -maxdepth 5 -type d | head -1)
 [ -n "$SYSROOT" ] || { echo "wasi-sysroot not found under $WASM_SDK" >&2; exit 1; }
-[ -f "$SYSROOT/share/wasi-sysroot/include/wasm32-wasi/ffi.h" ] || \
-  { echo "libffi headers missing from the WASI sysroot" >&2; exit 1; }
+[ -f "$SYSROOT/include/wasm32-wasi/ffi.h" ] || \
+  { echo "libffi headers missing from the WASI sysroot ($SYSROOT)" >&2; exit 1; }
 mkbridge() { printf '#!/bin/sh\nexec "%s" "$@"\n' "$2" > "$WASM_SDK/bin/$1"; chmod +x "$WASM_SDK/bin/$1"; }
 llvm_or_sdk() { command -v "$1" || echo "$SDK_BIN/$2"; }
 mkbridge wasm32-unknown-wasi-clang "$SDK_BIN/clang"
@@ -582,6 +593,7 @@ fi
 
 # Wasm needs the dynamic RTS too: keep every nonthreaded-nodebug RTS
 # sublibrary (vanilla + dynamic) buildable, disable the rest.
+git -C "$SRC" checkout -- rts/rts.cabal 2>/dev/null || true
 python3 - "$SRC/rts/rts.cabal" <<'PY_PATCH'
 import re, sys
 from pathlib import Path

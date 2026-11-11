@@ -72,7 +72,7 @@
       pkgconfigpath = pkgs.lib.makeSearchPathOutput "dev" "lib/pkgconfig" libDevs;
 
       pythonEnv = {
-        PATH = "${runtimeBin}:/usr/bin:/bin:/usr/local/bin";
+        PATH = "${runtimeBin}:/usr/bin:/bin:/usr/sbin:/sbin:/usr/local/bin";
         CURL_CA_BUNDLE = caBundle;
         SSL_CERT_FILE = caBundle;
         CPATH = cpath;

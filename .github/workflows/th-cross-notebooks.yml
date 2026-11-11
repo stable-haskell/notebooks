@@ -42,12 +42,14 @@ on:
     branches: [master]
     paths:
       - "*-th-cross.nb/**"
+      - "tools/**"
       - "flake.nix"
       - "flake.lock"
       - ".github/workflows/th-cross-notebooks.yml"
   pull_request:
     paths:
       - "*-th-cross.nb/**"
+      - "tools/**"
       - "flake.nix"
       - "flake.lock"
       - ".github/workflows/th-cross-notebooks.yml"
@@ -73,7 +75,7 @@ jobs:
   # plus the flake hash ONCE for every downstream job.
   plan:
     name: plan validation matrix
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     outputs:
       include: ${{ steps.matrix.outputs.include }}
       include_linux: ${{ steps.matrix.outputs.include_linux }}
@@ -84,7 +86,7 @@ jobs:
       cabal_commit: ${{ steps.refs.outputs.cabal_commit }}
       flake_hash: ${{ steps.refs.outputs.flake_hash }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           ref: ${{ inputs.ref || github.sha }}
 
@@ -168,7 +170,7 @@ jobs:
     if: needs.plan.outputs.has_linux == 'true'
     timeout-minutes: 360
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           ref: ${{ inputs.ref || github.sha }}
 
@@ -183,16 +185,19 @@ jobs:
           df -h /
 
       - name: Install Nix
-        uses: DeterminateSystems/nix-installer-action@main
-      - name: Enable Nix cache
-        uses: DeterminateSystems/magic-nix-cache-action@main
+        uses: cachix/install-nix-action@v31
+        with:
+          extra_nix_config: |
+            extra-experimental-features = nix-command flakes
+            extra-substituters = https://cache.zw3rk.com
+            extra-trusted-public-keys = loony-tools:pr9m4BkM/5/eSTZlkQyRt57Jz7OMBxNSUiMC4FkcNfk=
 
       # Bootstrap compiler for the source build (GHC 9.8.4) plus a stock
       # cabal for the first Cabal build. Cached: reinstalling the bindist
       # on every run would redo a hundreds-of-MB download for nothing.
       - name: Restore bootstrap cache
         id: bootstrap-cache
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: |
             ~/.ghcup
@@ -226,7 +231,7 @@ jobs:
 
       - name: Restore CROSS_ROOT base cache
         id: base-cache
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: |
             ~/cross-ghc-current/cabal-dist
@@ -281,21 +286,24 @@ jobs:
     if: needs.plan.outputs.has_macos == 'true'
     timeout-minutes: 360
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           ref: ${{ inputs.ref || github.sha }}
 
       - name: Install Nix
-        uses: DeterminateSystems/nix-installer-action@main
-      - name: Enable Nix cache
-        uses: DeterminateSystems/magic-nix-cache-action@main
+        uses: cachix/install-nix-action@v31
+        with:
+          extra_nix_config: |
+            extra-experimental-features = nix-command flakes
+            extra-substituters = https://cache.zw3rk.com
+            extra-trusted-public-keys = loony-tools:pr9m4BkM/5/eSTZlkQyRt57Jz7OMBxNSUiMC4FkcNfk=
 
       # Bootstrap compiler for the source build (GHC 9.8.4) plus a stock
       # cabal for the first Cabal build. Cached: reinstalling the bindist
       # on every run would redo a hundreds-of-MB download for nothing.
       - name: Restore bootstrap cache
         id: bootstrap-cache
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: |
             ~/.ghcup
@@ -329,7 +337,7 @@ jobs:
 
       - name: Restore CROSS_ROOT base cache
         id: base-cache
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: |
             ~/cross-ghc-current/cabal-dist
@@ -390,7 +398,7 @@ jobs:
       matrix:
         include: ${{ fromJson(needs.plan.outputs.include_linux) }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           ref: ${{ inputs.ref || github.sha }}
 
@@ -403,13 +411,16 @@ jobs:
           df -h /
 
       - name: Install Nix
-        uses: DeterminateSystems/nix-installer-action@main
-      - name: Enable Nix cache
-        uses: DeterminateSystems/magic-nix-cache-action@main
+        uses: cachix/install-nix-action@v31
+        with:
+          extra_nix_config: |
+            extra-experimental-features = nix-command flakes
+            extra-substituters = https://cache.zw3rk.com
+            extra-trusted-public-keys = loony-tools:pr9m4BkM/5/eSTZlkQyRt57Jz7OMBxNSUiMC4FkcNfk=
 
       - name: Restore bootstrap cache
         id: bootstrap-cache
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: |
             ~/.ghcup
@@ -442,7 +453,7 @@ jobs:
           echo "BOOT_CABAL=$HOME/.ghcup/bin/cabal" >> "$GITHUB_ENV"
 
       - name: Restore CROSS_ROOT base cache
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: |
             ~/cross-ghc-current/cabal-dist
@@ -461,7 +472,7 @@ jobs:
       # Nonexistent paths are skipped, so targets that do not use a given
       # tree simply ignore it.
       - name: Restore per-target cache
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: |
             ~/cross-ghc-current/stage3-${{ matrix.target }}
@@ -472,7 +483,7 @@ jobs:
             ~/cross-ghc-current/llvm-mingw-ucrt
             ~/cross-ghc-current/node-dist-*
             ~/cross-ghc-current/windows-ffi-ucrt
-          key: th-cross-stage3-${{ matrix.target }}-${{ matrix.arch }}-${{ needs.plan.outputs.flake_hash }}-${{ needs.plan.outputs.ghc_commit }}-${{ needs.plan.outputs.cabal_commit }}
+          key: th-cross-stage3-v2-${{ matrix.target }}-${{ matrix.arch }}-${{ needs.plan.outputs.flake_hash }}-${{ needs.plan.outputs.ghc_commit }}-${{ needs.plan.outputs.cabal_commit }}
 
       - name: Execute the notebook
         working-directory: ${{ matrix.dir }}
@@ -488,36 +499,35 @@ jobs:
           # bash kernel), from the notebook directory so the bare ipynb name
           # resolves — the same shape as wasm-hello.nb CI.
           # allow_errors=True so every cell runs and the executed notebook is
-          # always written (uploaded below for debugging); the marker checks
-          # decide pass/fail.
+          # always written (uploaded below for debugging); verify-and-render-notebook.py
+          # verifies every cell succeeded, checks the markers in executed stdout,
+          # and writes the full visual walkthrough to $GITHUB_STEP_SUMMARY.
           nix develop . -c jupyter nbconvert \
             --to notebook --execute \
             --ExecutePreprocessor.timeout=-1 \
             --ExecutePreprocessor.allow_errors=True \
             --output executed.ipynb \
             "${{ matrix.ipynb }}" || true
-          # Positive checks: the cross report actually spliced, built, and
-          # ran on the target. (Full per-cell output is in the uploaded
-          # executed.ipynb artifact.)
-          miss=
-          for marker in \
-            "SPLICE_ARCH=${{ matrix.expected_arch }}" \
-            "RUNTIME_ARCH=${{ matrix.expected_arch }}" \
-            "century=9261915075" \
-            "large=3428746875" \
-            "ONE_GHC_SHA256="; do
-            grep -qF "$marker" executed.ipynb \
-              || { echo "::error::marker missing: $marker"; miss=1; }
-          done
-          if [ -n "$miss" ]; then exit 1; fi
-          echo "✓ ${{ matrix.target }} (${{ matrix.arch }}): notebook executed; report markers present"
+          nix develop . -c jupyter nbconvert \
+            --to html \
+            --output executed.html \
+            executed.ipynb || true
+          python3 ../tools/verify-and-render-notebook.py executed.ipynb \
+            --title "${{ matrix.target }} (${{ matrix.arch }})" \
+            --marker "SPLICE_ARCH=${{ matrix.expected_arch }}" \
+            --marker "RUNTIME_ARCH=${{ matrix.expected_arch }}" \
+            --marker "century=9261915075" \
+            --marker "large=3428746875" \
+            --marker "ONE_GHC_SHA256="
 
-      - name: Upload executed notebook
+      - name: Upload executed notebook (HTML & ipynb)
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: executed-${{ matrix.target }}-${{ matrix.arch }}
-          path: ${{ matrix.dir }}/executed.ipynb
+          path: |
+            ${{ matrix.dir }}/executed.html
+            ${{ matrix.dir }}/executed.ipynb
           if-no-files-found: ignore
 
   # ── Stage 2: validate each notebook (macOS) ────────────────────────────
@@ -534,18 +544,21 @@ jobs:
       matrix:
         include: ${{ fromJson(needs.plan.outputs.include_macos) }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           ref: ${{ inputs.ref || github.sha }}
 
       - name: Install Nix
-        uses: DeterminateSystems/nix-installer-action@main
-      - name: Enable Nix cache
-        uses: DeterminateSystems/magic-nix-cache-action@main
+        uses: cachix/install-nix-action@v31
+        with:
+          extra_nix_config: |
+            extra-experimental-features = nix-command flakes
+            extra-substituters = https://cache.zw3rk.com
+            extra-trusted-public-keys = loony-tools:pr9m4BkM/5/eSTZlkQyRt57Jz7OMBxNSUiMC4FkcNfk=
 
       - name: Restore bootstrap cache
         id: bootstrap-cache
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: |
             ~/.ghcup
@@ -578,7 +591,7 @@ jobs:
           echo "BOOT_CABAL=$HOME/.ghcup/bin/cabal" >> "$GITHUB_ENV"
 
       - name: Restore CROSS_ROOT base cache
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: |
             ~/cross-ghc-current/cabal-dist
@@ -597,7 +610,7 @@ jobs:
       # Nonexistent paths are skipped, so targets that do not use a given
       # tree simply ignore it.
       - name: Restore per-target cache
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: |
             ~/cross-ghc-current/stage3-${{ matrix.target }}
@@ -609,12 +622,12 @@ jobs:
             ~/cross-ghc-current/node-dist-*
             ~/cross-ghc-current/windows-ffi-ucrt
             ~/cross-ghc-current/wine-macos
-          key: th-cross-stage3-${{ matrix.target }}-${{ matrix.arch }}-${{ needs.plan.outputs.flake_hash }}-${{ needs.plan.outputs.ghc_commit }}-${{ needs.plan.outputs.cabal_commit }}
+          key: th-cross-stage3-v2-${{ matrix.target }}-${{ matrix.arch }}-${{ needs.plan.outputs.flake_hash }}-${{ needs.plan.outputs.ghc_commit }}-${{ needs.plan.outputs.cabal_commit }}
 
       - name: Start Linux runner fallback when macOS VM lacks HVF (aarch64)
         if: matrix.target == 'aarch64'
         run: |
-          if [ "$(sysctl -n kern.hv_support 2>/dev/null || echo 0)" = "1" ]; then
+          if [ "$(/usr/sbin/sysctl -n kern.hv_support 2>/dev/null || echo 0)" = "1" ]; then
             echo "HVF available (kern.hv_support=1) — using hyper-linux (hl) directly"
             exit 0
           fi
@@ -642,34 +655,33 @@ jobs:
           # bash kernel), from the notebook directory so the bare ipynb name
           # resolves — the same shape as wasm-hello.nb CI.
           # allow_errors=True so every cell runs and the executed notebook is
-          # always written (uploaded below for debugging); the marker checks
-          # decide pass/fail.
+          # always written (uploaded below for debugging); verify-and-render-notebook.py
+          # verifies every cell succeeded, checks the markers in executed stdout,
+          # and writes the full visual walkthrough to $GITHUB_STEP_SUMMARY.
           nix develop . -c jupyter nbconvert \
             --to notebook --execute \
             --ExecutePreprocessor.timeout=-1 \
             --ExecutePreprocessor.allow_errors=True \
             --output executed.ipynb \
             "${{ matrix.ipynb }}" || true
-          # Positive checks: the cross report actually spliced, built, and
-          # ran on the target. (Full per-cell output is in the uploaded
-          # executed.ipynb artifact.)
-          miss=
-          for marker in \
-            "SPLICE_ARCH=${{ matrix.expected_arch }}" \
-            "RUNTIME_ARCH=${{ matrix.expected_arch }}" \
-            "century=9261915075" \
-            "large=3428746875" \
-            "ONE_GHC_SHA256="; do
-            grep -qF "$marker" executed.ipynb \
-              || { echo "::error::marker missing: $marker"; miss=1; }
-          done
-          if [ -n "$miss" ]; then exit 1; fi
-          echo "✓ ${{ matrix.target }} (${{ matrix.arch }}): notebook executed; report markers present"
+          nix develop . -c jupyter nbconvert \
+            --to html \
+            --output executed.html \
+            executed.ipynb || true
+          python3 ../tools/verify-and-render-notebook.py executed.ipynb \
+            --title "${{ matrix.target }} (${{ matrix.arch }})" \
+            --marker "SPLICE_ARCH=${{ matrix.expected_arch }}" \
+            --marker "RUNTIME_ARCH=${{ matrix.expected_arch }}" \
+            --marker "century=9261915075" \
+            --marker "large=3428746875" \
+            --marker "ONE_GHC_SHA256="
 
-      - name: Upload executed notebook
+      - name: Upload executed notebook (HTML & ipynb)
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: executed-${{ matrix.target }}-${{ matrix.arch }}
-          path: ${{ matrix.dir }}/executed.ipynb
+          path: |
+            ${{ matrix.dir }}/executed.html
+            ${{ matrix.dir }}/executed.ipynb
           if-no-files-found: ignore
