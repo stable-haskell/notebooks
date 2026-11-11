@@ -753,6 +753,75 @@ if not (lib / 'package.conf.d').exists():
 for name in ['dyld.mjs', 'post-link.mjs', 'prelude.mjs']:
     shutil.copyfile(root / 'ghc-src/utils/jsffi' / name, lib / name)
 shutil.copyfile(root / 'ghc-src/ghc-interp.js', lib / 'ghc-interp.js')
+dyld_src = (lib / 'dyld.mjs').read_text()
+old_ctor = '''    this.readStream = stream.Readable.toWeb(
+      fs.createReadStream(undefined, { fd: in_fd })
+    );
+    this.writeStream = stream.Writable.toWeb(
+      fs.createWriteStream(undefined, { fd: out_fd })
+    );'''
+new_ctor = '''    this.readStream = new ReadableStream({
+      pull(controller) {
+        return new Promise((resolve, reject) => {
+          const buf = Buffer.alloc(65536);
+          fs.read(in_fd, buf, 0, buf.length, null, (err, bytesRead) => {
+            if (err) return reject(err);
+            if (bytesRead === 0) { controller.close(); return resolve(); }
+            controller.enqueue(new Uint8Array(buf.buffer, buf.byteOffset, bytesRead));
+            resolve();
+          });
+        });
+      }
+    }, { highWaterMark: 0 });
+    this.writeStream = new WritableStream({
+      write(chunk) {
+        fs.writeSync(out_fd, chunk);
+      }
+    });'''
+assert old_ctor in dyld_src
+dyld_src = dyld_src.replace(old_ctor, new_ctor, 1)
+old_fetch = "stream.Readable.toWeb(fs.createReadStream(p))"
+assert old_fetch in dyld_src
+dyld_src = dyld_src.replace(old_fetch, "await fs.promises.readFile(p)", 1)
+old_load = "    await dyld.addLibrarySearchPath(libdir);\n\n    await dyld.loadDLL(ghciSoPath);"
+sysroot_lib = str(Path(os.environ['WASM_SYSROOT']) / 'lib/wasm32-wasi')
+stage3_dynlib = str(Path(os.environ['STAGE3']) / 'dynlib')
+new_load = (
+    "    await dyld.addLibrarySearchPath(libdir);\n"
+    f"    await dyld.addLibrarySearchPath({json.dumps(sysroot_lib)});\n"
+    f"    await dyld.addLibrarySearchPath({json.dumps(stage3_dynlib)});\n\n"
+    "    await dyld.loadDLL(ghciSoPath);"
+)
+assert old_load in dyld_src
+dyld_src = dyld_src.replace(old_load, new_load, 1)
+old_entry = '''  if (!process.env.GHCI_BROWSER) {
+    const rpc = new DyLDHost();
+    await main({
+      rpc,
+      libdir,
+      ghciSoPath,
+      args,
+    });
+    return;
+  }'''
+new_entry = '''  if (!process.env.GHCI_BROWSER) {
+    const rpc = new DyLDHost();
+    try {
+      await main({
+        rpc,
+        libdir,
+        ghciSoPath,
+        args,
+      });
+      process.exit(0);
+    } catch (err) {
+      console.error(err);
+      process.exit(1);
+    }
+  }'''
+assert old_entry in dyld_src
+dyld_src = dyld_src.replace(old_entry, new_entry, 1)
+(lib / 'dyld.mjs').write_text(dyld_src)
 (lib / 'dyld.mjs').chmod(0o755)
 print(triple, 'settings ready:', settings['target platform string'])
 PY_EOF
@@ -1046,6 +1115,10 @@ print('Registered', len(registrations), 'host library units')
 PY_REGISTER
 cp "$CROSS_ROOT/sources.lock" "$STAGE3/sources.lock"
 fi
+mkdir -p "$STAGE3/dynlib"
+find "$STAGE3/dist-newstyle" "$STAGE3/store" -name '*.so' -type f | while read -r so; do
+  ln -sf "$so" "$STAGE3/dynlib/$(basename "$so")"
+done
 for package in base template-haskell ghci text containers directory; do
   "$DIST/bin/$TRIPLE-ghc-pkg" --package-db="$tdb" field "$package" id | head -3
 done

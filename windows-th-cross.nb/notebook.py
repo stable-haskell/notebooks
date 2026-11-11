@@ -1020,19 +1020,23 @@ import pathlib, sys
 p = pathlib.Path(sys.argv[1])
 src = p.read_text()
 imp = "import GHCi.ResolvedBCO\n"
-imp_patch = imp + "#if defined(mingw32_HOST_OS)\nimport GHCi.ObjLink (initObjLinker, ShouldRetainCAFs(..), loadDLL)\n#endif\n"
+imp_patch = (
+    imp
+    + "import GHCi.ObjLink (initObjLinker, ShouldRetainCAFs(..), loadDLL)\n"
+    + "import System.Info (os)\n"
+)
 assert imp in src, "expected GHCi.ResolvedBCO import"
 src = src.replace(imp, imp_patch, 1)
-target = "  uninterruptibleMask $ serv verbose (hook verbose noLoadCall base_path pipe) pipe"
+target = "\n  uninterruptibleMask $ serv verbose (hook verbose noLoadCall base_path pipe) pipe"
 replacement = (
-    "#if defined(mingw32_HOST_OS)\n"
-    "  initObjLinker RetainCAFs\n"
-    "  _ <- loadDLL \"ucrtbase.dll\"\n"
-    "#endif\n"
+    "\n  when (os == \"mingw32\") $ do\n"
+    "    initObjLinker RetainCAFs\n"
+    "    _ <- loadDLL \"ucrtbase.dll\"\n"
+    "    pure ()"
     + target
 )
 assert target in src, "expected serv call in Interpreter.hs"
-src = src.replace(target, replacement)
+src = src.replace(target, replacement, 1)
 p.write_text(src)
 print("Patched IServ.Remote.Interpreter to preload ucrtbase.dll on Windows")
 PY_ISERV_UCRT
