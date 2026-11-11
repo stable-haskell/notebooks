@@ -496,6 +496,11 @@ jobs:
           # The shared base tree restored above; the cells default to this
           # same path when CROSS_ROOT is unset, set it explicitly anyway.
           export CROSS_ROOT="$HOME/cross-ghc-current"
+          cleanup_daemons() {
+            WINEPREFIX="$CROSS_ROOT/wineprefix" wineserver -k 2>/dev/null || true
+            pkill -f wineserver 2>/dev/null || true
+          }
+          trap cleanup_daemons EXIT
           # Run the real artifact: the notebook's own flake (JupyterLab +
           # bash kernel), from the notebook directory so the bare ipynb name
           # resolves — the same shape as wasm-hello.nb CI.
@@ -509,6 +514,7 @@ jobs:
             --ExecutePreprocessor.allow_errors=True \
             --output executed.ipynb \
             "${{ matrix.ipynb }}" || true
+          cleanup_daemons
           nix develop . -c jupyter nbconvert \
             --to html \
             --output executed.html \
@@ -520,6 +526,16 @@ jobs:
             --marker "century=9261915075" \
             --marker "large=3428746875" \
             --marker "ONE_GHC_SHA256="
+
+      - name: Upload executed notebook (HTML & ipynb)
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: executed-${{ matrix.target }}-${{ matrix.arch }}
+          path: |
+            ${{ matrix.dir }}/executed.html
+            ${{ matrix.dir }}/executed.ipynb
+          if-no-files-found: ignore
 
       - name: Check if stage3 target libraries completed
         id: stage3-ready
@@ -545,16 +561,6 @@ jobs:
             ~/cross-ghc-current/node-dist-*
             ~/cross-ghc-current/windows-ffi-ucrt
           key: th-cross-stage3-v2-${{ matrix.target }}-${{ matrix.arch }}-${{ needs.plan.outputs.flake_hash }}-${{ needs.plan.outputs.ghc_commit }}-${{ needs.plan.outputs.cabal_commit }}
-
-      - name: Upload executed notebook (HTML & ipynb)
-        if: always()
-        uses: actions/upload-artifact@v6
-        with:
-          name: executed-${{ matrix.target }}-${{ matrix.arch }}
-          path: |
-            ${{ matrix.dir }}/executed.html
-            ${{ matrix.dir }}/executed.ipynb
-          if-no-files-found: ignore
 
   # ── Stage 2: validate each notebook (macOS) ────────────────────────────
   # Same as above, on macOS. Split from Linux so a macOS issue never
@@ -678,6 +684,14 @@ jobs:
           # The shared base tree restored above; the cells default to this
           # same path when CROSS_ROOT is unset, set it explicitly anyway.
           export CROSS_ROOT="$HOME/cross-ghc-current"
+          cleanup_daemons() {
+            WINEPREFIX="$CROSS_ROOT/wineprefix" wineserver -k 2>/dev/null || true
+            pkill -f wineserver 2>/dev/null || true
+            if [ -n "${AARCH64_LINUX_VM:-}" ] && command -v limactl >/dev/null 2>&1; then
+              limactl stop -f "$AARCH64_LINUX_VM" 2>/dev/null || true
+            fi
+          }
+          trap cleanup_daemons EXIT
           # Run the real artifact: the notebook's own flake (JupyterLab +
           # bash kernel), from the notebook directory so the bare ipynb name
           # resolves — the same shape as wasm-hello.nb CI.
@@ -691,6 +705,7 @@ jobs:
             --ExecutePreprocessor.allow_errors=True \
             --output executed.ipynb \
             "${{ matrix.ipynb }}" || true
+          cleanup_daemons
           nix develop . -c jupyter nbconvert \
             --to html \
             --output executed.html \
@@ -702,6 +717,16 @@ jobs:
             --marker "century=9261915075" \
             --marker "large=3428746875" \
             --marker "ONE_GHC_SHA256="
+
+      - name: Upload executed notebook (HTML & ipynb)
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: executed-${{ matrix.target }}-${{ matrix.arch }}
+          path: |
+            ${{ matrix.dir }}/executed.html
+            ${{ matrix.dir }}/executed.ipynb
+          if-no-files-found: ignore
 
       - name: Check if stage3 target libraries completed
         id: stage3-ready
@@ -728,13 +753,3 @@ jobs:
             ~/cross-ghc-current/windows-ffi-ucrt
             ~/cross-ghc-current/wine-macos
           key: th-cross-stage3-v2-${{ matrix.target }}-${{ matrix.arch }}-${{ needs.plan.outputs.flake_hash }}-${{ needs.plan.outputs.ghc_commit }}-${{ needs.plan.outputs.cabal_commit }}
-
-      - name: Upload executed notebook (HTML & ipynb)
-        if: always()
-        uses: actions/upload-artifact@v6
-        with:
-          name: executed-${{ matrix.target }}-${{ matrix.arch }}
-          path: |
-            ${{ matrix.dir }}/executed.html
-            ${{ matrix.dir }}/executed.ipynb
-          if-no-files-found: ignore

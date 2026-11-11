@@ -699,7 +699,7 @@ cross_enter
 export PATH="$WASM_BIN:$PATH"
 cat > "$CROSS_ROOT/configure-target.py" <<'PY_EOF'
 from pathlib import Path
-import subprocess, ast, os, shutil
+import subprocess, ast, json, os, shutil
 root = Path(os.environ['CROSS_ROOT'])
 dist = Path(os.environ['DIST'])
 triple = 'wasm32-unknown-wasi'
@@ -730,7 +730,7 @@ for key in ['target is dynamic', 'target ships dynamic libraries']:
 for key in ['target is profiled', 'target ships profiling libraries']:
     settings[key] = 'NO'
 (lib / 'settings').write_text(
-    '[' + ',\n'.join('(' + repr(k) + ',' + repr(v) + ')' for k, v in settings.items()) + ']\n')
+    '[' + ',\n'.join('(' + json.dumps(k) + ',' + json.dumps(v) + ')' for k, v in settings.items()) + ']\n')
 for exe in ['ghc', 'ghc-pkg', 'hsc2hs']:
     p = dist / 'bin' / (triple + '-' + exe)
     if not p.exists():
@@ -1348,15 +1348,18 @@ cd "$FIBO"
 TRIPLE=wasm32-unknown-wasi
 cp catalogue.txt catalogue.txt.good
 printf 'bogus row contents\n' > catalogue.txt
+sleep 1
+touch catalogue.txt
 if "$CABAL" build -j2 -w "$DIST/bin/$TRIPLE-ghc" -W "$DIST/bin/ghc" \
   --with-hc-pkg="$DIST/bin/$TRIPLE-ghc-pkg" --with-build-hc-pkg="$DIST/bin/ghc-pkg" \
-  exe:cross-report 2>negative.err; then
+  exe:cross-report >negative.err 2>&1; then
   echo "invalid catalogue was accepted — expected a splice failure" >&2; exit 1
 fi
 grep -q 'expected LABEL INDEX (0..100000)' negative.err
 echo "PASS: invalid catalogue rejected during TH compilation"
 cp catalogue.txt.good catalogue.txt
-touch Setup.hs TH.hs Main.hs
+sleep 1
+touch Setup.hs TH.hs Main.hs catalogue.txt
 "$CABAL" build -j2 -w "$DIST/bin/$TRIPLE-ghc" -W "$DIST/bin/ghc" \
   --with-hc-pkg="$DIST/bin/$TRIPLE-ghc-pkg" --with-build-hc-pkg="$DIST/bin/ghc-pkg" \
   exe:cross-report

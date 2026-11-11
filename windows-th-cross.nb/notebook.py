@@ -362,7 +362,8 @@ export WINEDLLOVERRIDES="mscoree,mshtml=;winemac.drv=d"
 export WINEDEBUG="-all"
 export MVK_CONFIG_LOG_LEVEL=0
 mkdir -p "$WINEPREFIX"
-"$WINE_BIN" wineboot --init
+"$WINE_BIN" wineboot --init </dev/null
+"${WINE_BIN%/*}/wineserver" -k 2>/dev/null || wineserver -k 2>/dev/null || true
 echo "Wine prefix ready at $WINEPREFIX"
 """)
 
@@ -1017,10 +1018,12 @@ packages:
   https://hackage.haskell.org/package/hsc2hs-0.68.10/hsc2hs-0.68.10.tar.gz
   https://hackage.haskell.org/package/network-3.2.7.0/network-3.2.7.0.tar.gz
 package *
-  flags: -threaded
   shared: False
   optimization: False
+package iserv-proxy
+  flags: -threaded
 constraints:
+  iserv-proxy -threaded,
   build:any.ghc-internal installed,
   any.ghc-internal installed,
   any.ghci installed,
@@ -1044,12 +1047,16 @@ packages:
   https://hackage.haskell.org/package/random-1.2.1.3/random-1.2.1.3.tar.gz
   https://hackage.haskell.org/package/splitmix-0.1.0.5/splitmix-0.1.0.5.tar.gz
 package *
-  flags: -threaded
   shared: False
+  executable-dynamic: False
+  library-vanilla: True
   optimization: False
+package iserv-proxy
+  flags: -threaded
 package network
   configure-options: --host=x86_64-w64-mingw32 --with-cc=$LLVM_MINGW/bin/x86_64-w64-mingw32-clang
 constraints:
+  iserv-proxy -threaded,
   build:any.base installed,
   build:any.Cabal installed,
   build:any.Cabal-syntax installed,
@@ -1123,7 +1130,8 @@ export WINEPREFIX="$CROSS_ROOT/wineprefix"
 export WINEDLLOVERRIDES="mscoree,mshtml=;winemac.drv=d"
 export WINEDEBUG="-all"
 export MVK_CONFIG_LOG_LEVEL=0
-out=$("$WINE_BIN" "$CROSS_ROOT/smoke/arch.exe")
+out=$("$WINE_BIN" "$CROSS_ROOT/smoke/arch.exe" </dev/null | tr -d '\r')
+"${WINE_BIN%/*}/wineserver" -k 2>/dev/null || wineserver -k 2>/dev/null || true
 printf 'Splice evaluated for: %s\n' "$out"
 [[ "$out" == '("x86_64","mingw32")' ]]
 echo "Wine TH smoke test passed."
@@ -1347,6 +1355,7 @@ bin=$(PATH="$DIST/bin:$PATH" "$CABAL" list-bin \
 [[ -x "$bin" ]]
 printf '%s\n' "$bin" > "$CROSS_ROOT/report-bin.path"
 file "$bin"
+WINEPREFIX="$CROSS_ROOT/wineprefix" "${WINE_BIN%/*}/wineserver" -k 2>/dev/null || wineserver -k 2>/dev/null || true
 """)
 
 code("win-app-run", r"""
@@ -1361,7 +1370,12 @@ export WINEDEBUG="-all"
 export MVK_CONFIG_LOG_LEVEL=0
 
 bin=$(cat "$CROSS_ROOT/report-bin.path")
-run_report() { "$WINE_BIN" "$bin" "$@"; }
+run_report() {
+  local out rc=0
+  out=$("$WINE_BIN" "$bin" "$@" </dev/null) || rc=$?
+  printf '%s\n' "${out//$'\r'/}"
+  return $rc
+}
 run_report
 info=$(run_report --info)
 printf '%s\n' "$info" | tee "$CROSS_ROOT/report-info.txt"
@@ -1377,7 +1391,8 @@ grep -Fx "BUILD_MACHINE_ARCH=$BUILD_ARCH" "$CROSS_ROOT/report-build.log"
 if run_report unknown > "$CROSS_ROOT/report-error.txt" 2>&1; then
   echo "Unknown catalogue label unexpectedly succeeded" >&2; exit 1
 fi
-grep -Fx 'Unknown catalogue entry: unknown' "$CROSS_ROOT/report-error.txt"
+tr -d '\r' < "$CROSS_ROOT/report-error.txt" | grep -Fx 'Unknown catalogue entry: unknown'
+"${WINE_BIN%/*}/wineserver" -k 2>/dev/null || wineserver -k 2>/dev/null || true
 echo "Cross compilation checks passed."
 """)
 
@@ -1405,8 +1420,10 @@ export MVK_CONFIG_LOG_LEVEL=0
 
 cd "$FIBO"
 cp catalogue.txt "$CROSS_ROOT/catalogue.txt.good"
-trap 'cp "$CROSS_ROOT/catalogue.txt.good" catalogue.txt' EXIT
+trap 'cp "$CROSS_ROOT/catalogue.txt.good" catalogue.txt; "${WINE_BIN%/*}/wineserver" -k 2>/dev/null || wineserver -k 2>/dev/null || true' EXIT
 echo 'invalid row contents' > catalogue.txt
+sleep 1
+touch catalogue.txt
 if PATH="$DIST/bin:$PATH" "$CABAL" build -j"$BUILD_JOBS" \
   -w x86_64-w64-mingw32-ghc -W ghc \
   --with-hc-pkg="$DIST/bin/x86_64-w64-mingw32-ghc-pkg" \
@@ -1419,7 +1436,9 @@ fi
 grep -q 'expected LABEL INDEX (0..100000)' "$CROSS_ROOT/negative-build.log"
 echo "Invalid catalogue rejected during TH compilation."
 cp "$CROSS_ROOT/catalogue.txt.good" catalogue.txt
-trap - EXIT
+sleep 1
+touch catalogue.txt
+trap ' "${WINE_BIN%/*}/wineserver" -k 2>/dev/null || wineserver -k 2>/dev/null || true' EXIT
 PATH="$DIST/bin:$PATH" "$CABAL" build -j"$BUILD_JOBS" \
   -w x86_64-w64-mingw32-ghc -W ghc \
   --with-hc-pkg="$DIST/bin/x86_64-w64-mingw32-ghc-pkg" \
@@ -1429,7 +1448,8 @@ PATH="$DIST/bin:$PATH" "$CABAL" build -j"$BUILD_JOBS" \
   --ghc-option=-pgmi$CROSS_ROOT/bin/windows-runner
 echo "Restored catalogue rebuilt."
 bin=$(cat "$CROSS_ROOT/report-bin.path")
-[[ $("$WINE_BIN" "$bin" large) == 3428746875 ]]
+[[ $("$WINE_BIN" "$bin" large </dev/null | tr -d '\r') == 3428746875 ]]
+"${WINE_BIN%/*}/wineserver" -k 2>/dev/null || wineserver -k 2>/dev/null || true
 
 # One compiler throughout: the target name selects settings, not a new binary.
 NATIVE_SHA=$(python3 -c "import hashlib;print(hashlib.file_digest(open('$DIST/bin/ghc','rb'),'sha256').hexdigest())")

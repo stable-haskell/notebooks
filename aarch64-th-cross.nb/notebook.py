@@ -367,7 +367,11 @@ case "$(uname -s)-$(uname -m)" in
           | limactl shell "$AARCH64_LINUX_VM" -- sudo tar -C / -xf - >&2
       fi
       vm_ld="${AARCH64_LIBFFI_LIB:-}${AARCH64_SYSROOT:+:$AARCH64_SYSROOT/lib}"
-      exec limactl shell --workdir "$PWD" "$AARCH64_LINUX_VM" -- env LD_LIBRARY_PATH="${vm_ld#:}" "$@"
+      if [[ " $* " == *" --stdio "* ]]; then
+        exec limactl shell --workdir "$PWD" "$AARCH64_LINUX_VM" -- env LD_LIBRARY_PATH="${vm_ld#:}" "$@"
+      else
+        exec limactl shell --workdir "$PWD" "$AARCH64_LINUX_VM" -- env LD_LIBRARY_PATH="${vm_ld#:}" "$@" </dev/null
+      fi
     fi
     echo "No AArch64 Linux runner: 'hl' is missing and AARCH64_LINUX_VM is unset." >&2
     echo "On Apple Silicon with HVF, enter the flake dev shell (provides hl);" >&2
@@ -1185,7 +1189,7 @@ fi
 EOF
 chmod +x "$CROSS_ROOT/bin/aarch64-iserv"
 set +e
-"$CROSS_ROOT/bin/aarch64-iserv" > "$CROSS_ROOT/iserv-usage.log" 2>&1
+"$CROSS_ROOT/bin/aarch64-iserv" </dev/null > "$CROSS_ROOT/iserv-usage.log" 2>&1
 rc=$?
 set -e
 cat "$CROSS_ROOT/iserv-usage.log"

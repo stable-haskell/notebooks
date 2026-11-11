@@ -96,8 +96,10 @@ def main() -> int:
         failed = bool(errors) or unexecuted
         if failed:
             reason = errors[0] if errors else "Cell did not execute"
-            stderr_tail = "\n".join(stderr.strip().splitlines()[-15:]) if stderr.strip() else reason
+            combined_cell_out = (stdout.strip() + "\n" + stderr.strip()).strip()
+            stderr_tail = "\n".join(combined_cell_out.splitlines()[-30:]) if combined_cell_out else reason
             failed_cells.append((cid, stderr_tail))
+            print(f"=== FAILED CELL {cid} OUTPUT TAIL ===\n{stderr_tail}\n=== END {cid} ===", file=sys.stderr)
             gh_msg = stderr_tail.replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
             print(f"::error title=Cell {cid} failed::{gh_msg}", file=sys.stderr)
 
