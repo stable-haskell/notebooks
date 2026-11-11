@@ -265,7 +265,7 @@ else
     TARGET_PREFIX=aarch64-linux-gnu-
     TARGET_CC=$(command -v aarch64-linux-gnu-gcc)
     TARGET_CXX=$(command -v aarch64-linux-gnu-g++)
-    python3 - "$CROSS_ROOT/gate.env" "$TRIPLE" "$TARGET_PREFIX" "$TARGET_CC" "$TARGET_CXX" <<'PY_TRIPLE'
+    python3 - "$CROSS_ROOT/gate-aarch64.env" "$TRIPLE" "$TARGET_PREFIX" "$TARGET_CC" "$TARGET_CXX" <<'PY_TRIPLE'
 import sys
 from pathlib import Path
 p, triple, prefix, cc, cxx = Path(sys.argv[1]), sys.argv[2], sys.argv[3], sys.argv[4], sys.argv[5]
@@ -278,6 +278,7 @@ lines += [f'TRIPLE={triple}', f'TARGET_PREFIX={prefix}', f'TARGET_CC={cc}', f'TA
 p.write_text('\n'.join(lines) + '\n')
 print(f'Re-pointed at available toolchain: {triple}')
 PY_TRIPLE
+    cp "$CROSS_ROOT/gate-aarch64.env" "$CROSS_ROOT/gate.env"
   fi
   command -v "$TARGET_CC"
   command -v qemu-aarch64-static || command -v qemu-aarch64
@@ -449,7 +450,7 @@ checkout_ref() {
     git -C "$dest" remote add origin "$url"
   else
     [[ $(git -C "$dest" remote get-url origin) == "$url" ]]
-    git -C "$dest" checkout -- cabal-install/src/Distribution/Client/Dependency.hs 2>/dev/null || true
+    git -C "$dest" checkout -- cabal-install/src/Distribution/Client/Dependency.hs cabal.project.stage0 2>/dev/null || true
     git -C "$dest" diff --exit-code
     git -C "$dest" diff --cached --exit-code
   fi
@@ -552,6 +553,9 @@ else
   # Use GHC's own compiler-build driver and its pinned internal Cabal builder.
   # In particular, do not set CABAL=$CABAL or USE_SYSTEM_CABAL here.
   cd "$GHC_SRC"
+  if ! grep -qE '^(packages|optional-packages):' "$GHC_SRC/cabal.project.stage0"; then
+    printf '\noptional-packages:\n' >> "$GHC_SRC/cabal.project.stage0"
+  fi
   "$MAKE_BIN" -j"$BUILD_JOBS" stage2 GHC0="$BOOT_GHC" CABAL0="$BOOT_CABAL" \
     THREADS="$BUILD_JOBS" DYNAMIC=0 CABAL_ARGS="-j$BUILD_JOBS --disable-optimization --ghc-option=-j$GHC_JOBS"
   [[ -x "$DIST/bin/ghc" && -x "$DIST/bin/ghc-pkg" ]]
@@ -560,7 +564,7 @@ fi
 "$DIST/bin/ghc" -list-targets
 "$DIST/bin/ghc-pkg" check
 ONE_GHC_SHA256=$(sha256_file "$DIST/bin/ghc")
-python3 - "$CROSS_ROOT/gate.env" "$ONE_GHC_SHA256" <<'PY_GHC_HASH'
+python3 - "$CROSS_ROOT/gate-aarch64.env" "$ONE_GHC_SHA256" <<'PY_GHC_HASH'
 import sys
 from pathlib import Path
 p = Path(sys.argv[1])
@@ -568,6 +572,7 @@ lines = [l for l in p.read_text().splitlines() if not l.startswith('ONE_GHC_SHA2
 lines.append(f'ONE_GHC_SHA256={sys.argv[2]}')
 p.write_text('\n'.join(lines) + '\n')
 PY_GHC_HASH
+cp "$CROSS_ROOT/gate-aarch64.env" "$CROSS_ROOT/gate.env"
 echo "ONE_GHC_SHA256=$ONE_GHC_SHA256"
 ''')
 

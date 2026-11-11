@@ -301,7 +301,7 @@ checkout_ref() {
     git -C "$dest" remote add origin "$url"
   else
     [[ $(git -C "$dest" remote get-url origin) == "$url" ]]
-    git -C "$dest" checkout -- cabal-install/src/Distribution/Client/Dependency.hs 2>/dev/null || true
+    git -C "$dest" checkout -- cabal-install/src/Distribution/Client/Dependency.hs cabal.project.stage0 2>/dev/null || true
     git -C "$dest" diff --exit-code
     git -C "$dest" diff --cached --exit-code
   fi
@@ -405,6 +405,9 @@ else
   # Use GHC's own compiler-build driver and its pinned internal Cabal builder.
   # In particular, do not set CABAL=$CABAL or USE_SYSTEM_CABAL here.
   cd "$GHC_SRC"
+  if ! grep -qE '^(packages|optional-packages):' "$GHC_SRC/cabal.project.stage0"; then
+    printf '\noptional-packages:\n' >> "$GHC_SRC/cabal.project.stage0"
+  fi
   "$MAKE_BIN" -j"$BUILD_JOBS" stage2 GHC0="$BOOT_GHC" CABAL0="$BOOT_CABAL" \
     THREADS="$BUILD_JOBS" DYNAMIC=0 CABAL_ARGS="-j$BUILD_JOBS --disable-optimization --ghc-option=-j$GHC_JOBS"
   [[ -x "$DIST/bin/ghc" && -x "$DIST/bin/ghc-pkg" ]]
