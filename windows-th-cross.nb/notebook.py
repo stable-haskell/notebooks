@@ -305,11 +305,14 @@ PY_FFI
 fi
 
 # Wine discovery: $WINE_BIN overrides, then wine64, then wine.
-# On darwin, check the Wine app bundles and fall back to the Homebrew cask.
+# On darwin, check the Wine app bundles and fall back to the pinned Gcenx Wine build.
 WINE_BIN=${WINE:-$(command -v wine64 || command -v wine || true)}
 if [[ -z "${WINE_BIN:-}" && "$BUILD_OS" == "darwin" ]]; then
   /usr/sbin/softwareupdate --install-rosetta --agree-to-license 2>/dev/null || true
-  for wine_dir in "/Applications/Wine Stable.app/Contents/Resources/wine/bin" "/Applications/Wine Crossover.app/Contents/SharedSupport/wine/bin"; do
+  for wine_dir in \
+    "$CROSS_ROOT/wine-macos/Wine Stable.app/Contents/Resources/wine/bin" \
+    "/Applications/Wine Stable.app/Contents/Resources/wine/bin" \
+    "/Applications/Wine Crossover.app/Contents/SharedSupport/wine/bin"; do
     if [[ -x "$wine_dir/wine64" ]]; then
       export PATH="$wine_dir:$PATH"
       WINE_BIN="$wine_dir/wine64"
@@ -320,12 +323,25 @@ if [[ -z "${WINE_BIN:-}" && "$BUILD_OS" == "darwin" ]]; then
       break
     fi
   done
-  if [[ -z "${WINE_BIN:-}" ]] && command -v brew >/dev/null 2>&1; then
-    brew install --cask wine-stable
-    export PATH="/Applications/Wine Stable.app/Contents/Resources/wine/bin:$PATH"
-    WINE_BIN=$(command -v wine64 || command -v wine || true)
+  if [[ -z "${WINE_BIN:-}" ]]; then
+    WINE_VER="11.0_1"
+    WINE_TARBALL="wine-stable-${WINE_VER}-osx64.tar.xz"
+    WINE_URL="https://github.com/Gcenx/macOS_Wine_builds/releases/download/${WINE_VER}/${WINE_TARBALL}"
+    WINE_SHA256="b50dc50ec7f41d58b115a6b685d4d1315ba3c797bd3aa0f49213f2703cb82388"
+    [[ -f "$DL/$WINE_TARBALL" ]] || curl -fL --retry 3 -o "$DL/$WINE_TARBALL" "$WINE_URL"
+    python3 - "$DL/$WINE_TARBALL" "$WINE_SHA256" <<'PY_WINE'
+import hashlib, sys
+digest = hashlib.file_digest(open(sys.argv[1], 'rb'), 'sha256').hexdigest()
+assert digest == sys.argv[2], f"Wine hash mismatch: {digest}"
+print("Wine hash ok")
+PY_WINE
+    mkdir -p "$CROSS_ROOT/wine-macos"
+    tar -xJf "$DL/$WINE_TARBALL" -C "$CROSS_ROOT/wine-macos"
+    xattr -dr com.apple.quarantine "$CROSS_ROOT/wine-macos/Wine Stable.app" 2>/dev/null || true
+    wine_dir="$CROSS_ROOT/wine-macos/Wine Stable.app/Contents/Resources/wine/bin"
+    export PATH="$wine_dir:$PATH"
+    WINE_BIN="$wine_dir/wine"
   fi
-  xattr -dr com.apple.quarantine "/Applications/Wine Stable.app" 2>/dev/null || true
 fi
 [[ -n "${WINE_BIN:-}" && -x "$WINE_BIN" ]] || {
   echo "No wine64/wine on PATH; enter this notebook's flake dev shell (Wine ships per platform there)." >&2; exit 1; }
@@ -337,6 +353,7 @@ cp "$ROOT/gate-windows.env" "$ROOT/gate.env"
 export WINEPREFIX="$CROSS_ROOT/wineprefix"
 export WINEDLLOVERRIDES="mscoree,mshtml=;winemac.drv=d"
 export WINEDEBUG="-all"
+export MVK_CONFIG_LOG_LEVEL=0
 mkdir -p "$WINEPREFIX"
 "$WINE_BIN" wineboot --init
 echo "Wine prefix ready at $WINEPREFIX"
@@ -1030,6 +1047,7 @@ mkdir -p "$work"
 export WINEPREFIX="$CROSS_ROOT/wineprefix"
 export WINEDLLOVERRIDES="mscoree,mshtml=;winemac.drv=d"
 export WINEDEBUG="-all"
+export MVK_CONFIG_LOG_LEVEL=0
 exec "$proxy" "\$@" --pipe "$WINE_BIN" "$interpreter" "$work" --stdio --no-load-call
 RUNNER
 chmod +x "$CROSS_ROOT/bin/windows-runner"
@@ -1050,6 +1068,7 @@ file "$CROSS_ROOT/smoke/arch.exe"
 export WINEPREFIX="$CROSS_ROOT/wineprefix"
 export WINEDLLOVERRIDES="mscoree,mshtml=;winemac.drv=d"
 export WINEDEBUG="-all"
+export MVK_CONFIG_LOG_LEVEL=0
 out=$("$WINE_BIN" "$CROSS_ROOT/smoke/arch.exe")
 printf 'Splice evaluated for: %s\n' "$out"
 [[ "$out" == '("x86_64","mingw32")' ]]
@@ -1285,6 +1304,7 @@ cross_enter
 export WINEPREFIX="$CROSS_ROOT/wineprefix"
 export WINEDLLOVERRIDES="mscoree,mshtml=;winemac.drv=d"
 export WINEDEBUG="-all"
+export MVK_CONFIG_LOG_LEVEL=0
 
 bin=$(cat "$CROSS_ROOT/report-bin.path")
 run_report() { "$WINE_BIN" "$bin" "$@"; }
@@ -1327,6 +1347,7 @@ cross_enter
 export WINEPREFIX="$CROSS_ROOT/wineprefix"
 export WINEDLLOVERRIDES="mscoree,mshtml=;winemac.drv=d"
 export WINEDEBUG="-all"
+export MVK_CONFIG_LOG_LEVEL=0
 
 cd "$FIBO"
 cp catalogue.txt "$CROSS_ROOT/catalogue.txt.good"

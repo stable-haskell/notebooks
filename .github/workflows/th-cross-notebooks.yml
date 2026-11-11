@@ -608,6 +608,7 @@ jobs:
             ~/cross-ghc-current/llvm-mingw-ucrt
             ~/cross-ghc-current/node-dist-*
             ~/cross-ghc-current/windows-ffi-ucrt
+            ~/cross-ghc-current/wine-macos
           key: th-cross-stage3-${{ matrix.target }}-${{ matrix.arch }}-${{ needs.plan.outputs.flake_hash }}-${{ needs.plan.outputs.ghc_commit }}-${{ needs.plan.outputs.cabal_commit }}
 
       - name: Start Linux runner fallback when macOS VM lacks HVF (aarch64)
@@ -622,13 +623,10 @@ jobs:
           limactl start --name=a64runner --vm-type=qemu --mount-writable --tty=false template://alpine
           echo "AARCH64_LINUX_VM=a64runner" >> "$GITHUB_ENV"
 
-      - name: Install Wine under Rosetta 2 (windows on macOS)
+      - name: Install Rosetta 2 for Wine (windows on macOS)
         if: matrix.target == 'windows'
         run: |
           /usr/sbin/softwareupdate --install-rosetta --agree-to-license || true
-          brew install --cask wine-stable
-          xattr -dr com.apple.quarantine "/Applications/Wine Stable.app" 2>/dev/null || true
-          echo "/Applications/Wine Stable.app/Contents/Resources/wine/bin" >> "$GITHUB_PATH"
 
       - name: Execute the notebook
         working-directory: ${{ matrix.dir }}
