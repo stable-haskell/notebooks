@@ -1006,8 +1006,8 @@ if [[ ! -d "$ISERV_SRC/.git" ]]; then
 fi
 git -C "$ISERV_SRC" rev-parse HEAD
 
-mkdir -p "$CROSS_ROOT/proxy-build"
-cat > "$CROSS_ROOT/proxy-build/cabal.project" << PROJECT
+mkdir -p "$CROSS_ROOT/proxy-native"
+cat > "$CROSS_ROOT/proxy-native/cabal.project" << PROJECT
 active-repositories: :none
 allow-boot-library-installs: True
 allow-newer: all
@@ -1026,11 +1026,55 @@ constraints:
   any.ghci installed,
   any.base installed
 PROJECT
-cd "$CROSS_ROOT/proxy-build"
+cd "$CROSS_ROOT/proxy-native"
 "$CABAL" build -j"$BUILD_JOBS" -w "$DIST/bin/ghc" exe:iserv-proxy
 "$CABAL" list-bin -w "$DIST/bin/ghc" exe:iserv-proxy > "$CROSS_ROOT/proxy-native.path"
+
+mkdir -p "$CROSS_ROOT/proxy-windows"
+cat > "$CROSS_ROOT/proxy-windows/cabal.project" << PROJECT
+active-repositories: :none
+allow-boot-library-installs: True
+allow-newer: all
+jobs: 2
+packages:
+  $ISERV_SRC
+  https://hackage.haskell.org/package/hsc2hs-0.68.10/hsc2hs-0.68.10.tar.gz
+  https://hackage.haskell.org/package/network-3.2.7.0/network-3.2.7.0.tar.gz
+  https://hackage.haskell.org/package/temporary-1.3/temporary-1.3.tar.gz
+  https://hackage.haskell.org/package/random-1.2.1.3/random-1.2.1.3.tar.gz
+  https://hackage.haskell.org/package/splitmix-0.1.0.5/splitmix-0.1.0.5.tar.gz
+package *
+  flags: -threaded
+  shared: False
+  optimization: False
+package network
+  configure-options: --host=x86_64-w64-mingw32 --with-cc=$LLVM_MINGW/bin/x86_64-w64-mingw32-clang
+constraints:
+  build:any.base installed,
+  build:any.Cabal installed,
+  build:any.Cabal-syntax installed,
+  build:any.ghc-internal installed,
+  any.ghc-internal installed,
+  any.ghci installed,
+  any.base installed,
+  any.bytestring installed,
+  any.containers installed,
+  any.deepseq installed,
+  any.directory installed,
+  any.exceptions installed,
+  any.filepath installed,
+  any.mtl installed,
+  any.stm installed,
+  any.transformers installed,
+  any.Win32 installed
+PROJECT
+cd "$CROSS_ROOT/proxy-windows"
+export NM="$LLVM_MINGW/bin/x86_64-w64-mingw32-nm"
+export OBJDUMP="$LLVM_MINGW/bin/x86_64-w64-mingw32-objdump"
 "$CABAL" build -j"$BUILD_JOBS" --hsc2hs-options=-x \
   --with-gcc="$LLVM_MINGW/bin/x86_64-w64-mingw32-clang" \
+  --with-hsc2hs="$DIST/bin/hsc2hs" \
+  --with-build-hsc2hs="$DIST/bin/hsc2hs" \
   -w "$DIST/bin/x86_64-w64-mingw32-ghc" -W "$DIST/bin/ghc" \
   --with-hc-pkg="$DIST/bin/x86_64-w64-mingw32-ghc-pkg" \
   --with-build-hc-pkg="$DIST/bin/ghc-pkg" \

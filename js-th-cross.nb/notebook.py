@@ -573,7 +573,11 @@ PY_SETTINGS
 for f in dyld.mjs post-link.mjs prelude.mjs; do
   cp "$SRC/utils/jsffi/$f" "$target_lib/$f"
 done
-cp "$SRC/ghc-interp.js" "$target_lib/ghc-interp.js"
+{
+  printf 'globalThis.h$rts_breakpoint_io_action = null;\n'
+  printf 'globalThis.h$rts_stop_on_exception = null;\n'
+  cat "$SRC/ghc-interp.js"
+} > "$target_lib/ghc-interp.js"
 if [[ ! -d "$target_lib/package.conf.d" ]]; then
   "$DIST/bin/ghc-pkg" init "$target_lib/package.conf.d"
 fi
@@ -935,6 +939,7 @@ main = print $(lift (arch, os))
 EOF
 "$DIST/bin/javascript-unknown-ghcjs-ghc" \
   -fforce-recomp -O0 -fexternal-interpreter \
+  -package base -package template-haskell \
   -o "$CROSS_ROOT/smoke-js/arch" "$CROSS_ROOT/smoke-js/Arch.hs"
 out=$(node "$CROSS_ROOT/smoke-js/arch.jsexe/all.js")
 printf 'Splice evaluated for: %s\n' "$out"

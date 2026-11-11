@@ -362,7 +362,12 @@ case "$(uname -s)-$(uname -m)" in
     fi
     # No HVF entitlement (e.g. CI VMs): run inside a Linux VM instead.
     if [[ -n "${AARCH64_LINUX_VM:-}" ]] && command -v limactl >/dev/null 2>&1; then
-      exec limactl shell --workdir "$PWD" "$AARCH64_LINUX_VM" -- "$@"
+      if [[ -n "${AARCH64_SYSROOT:-}" ]] && ! limactl shell "$AARCH64_LINUX_VM" -- test -d "$AARCH64_SYSROOT" </dev/null >/dev/null 2>&1; then
+        tar -C / -cf - "${AARCH64_SYSROOT#/}" ${AARCH64_LIBFFI_LIB:+"${AARCH64_LIBFFI_LIB#/}"} \
+          | limactl shell "$AARCH64_LINUX_VM" -- sudo tar -C / -xf - >&2
+      fi
+      vm_ld="${AARCH64_LIBFFI_LIB:-}${AARCH64_SYSROOT:+:$AARCH64_SYSROOT/lib}"
+      exec limactl shell --workdir "$PWD" "$AARCH64_LINUX_VM" -- env LD_LIBRARY_PATH="${vm_ld#:}" "$@"
     fi
     echo "No AArch64 Linux runner: 'hl' is missing and AARCH64_LINUX_VM is unset." >&2
     echo "On Apple Silicon with HVF, enter the flake dev shell (provides hl);" >&2

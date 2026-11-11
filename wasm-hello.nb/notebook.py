@@ -170,6 +170,18 @@ the wasi-sdk) and are idempotent — re-running is fine.
 code("wasm-add-channel", r"""
 ghcup config add-release-channel \
   https://stable-haskell.github.io/ghc/ghcup-multi-target-0.1.0.yaml
+
+# ghcup-multi-target-0.1.0.yaml currently lists only the multi-target GHC;
+# extract the 0.1.0 Cabal entry from ghcup-wasm.yaml so `ghcup install cabal`
+# finds cabal-3.17.0.0.stable.0 as well.
+mkdir -p "$HOME/.ghcup"
+python3 - "$HOME/.ghcup/ghcup-cabal-0.1.0.yaml" <<'PY'
+import sys, urllib.request
+text = urllib.request.urlopen("https://stable-haskell.github.io/ghc/ghcup-wasm.yaml").read().decode()
+cabal_part = text[text.index("  Cabal:"):]
+open(sys.argv[1], "w").write("---\ntoolRequirements: {}\nghcupDownloads:\n" + cabal_part)
+PY
+ghcup config add-release-channel "file://$HOME/.ghcup/ghcup-cabal-0.1.0.yaml"
 """)
 
 code("wasm-install-ghc", r"""

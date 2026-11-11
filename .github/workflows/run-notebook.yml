@@ -100,8 +100,9 @@ jobs:
             ~/.ghcup
             ~/.ghc-wasm
             wasm-hello.nb/stable-haskell-wasm-hello/dist-newstyle/store
-          key: wasm-hello-${{ runner.os }}-${{ matrix.arch }}-${{ steps.versions.outputs.multi_version }}
+          key: wasm-hello-v2-${{ runner.os }}-${{ matrix.arch }}-${{ steps.versions.outputs.multi_version }}
           restore-keys: |
+            wasm-hello-v2-${{ runner.os }}-${{ matrix.arch }}-
             wasm-hello-${{ runner.os }}-${{ matrix.arch }}-
 
       # Minimal ghcup only (the binary at ~/.ghcup/bin/ghcup). The notebook's
@@ -116,12 +117,16 @@ jobs:
         if: steps.toolchain-cache.outputs.cache-hit != 'true'
         run: |
           set -eux
+          export GHCUP_INSTALL_BASE_PREFIX="$HOME"
+          echo "GHCUP_INSTALL_BASE_PREFIX=$HOME" >> "$GITHUB_ENV"
+          if [ ! -L "$HOME/.ghcup" ] && [ -x "$HOME/.ghcup/bin/ghcup" ]; then
+            echo "Reusing restored ~/.ghcup from fallback cache"
+            exit 0
+          fi
           # GitHub's x86_64 image preinstalls ghcup and symlinks ~/.ghcup to the
           # root-owned /usr/local/.ghcup, so the installer's chmod hits EPERM.
           # Start from a clean $HOME/.ghcup (no-op on images without the preinstall).
           sudo rm -rf "$HOME/.ghcup"
-          export GHCUP_INSTALL_BASE_PREFIX="$HOME"
-          echo "GHCUP_INSTALL_BASE_PREFIX=$HOME" >> "$GITHUB_ENV"
           curl --proto '=https' --tlsv1.2 -sSf https://get-ghcup.haskell.org | \
             BOOTSTRAP_HASKELL_NONINTERACTIVE=1 \
             BOOTSTRAP_HASKELL_MINIMAL=1 \

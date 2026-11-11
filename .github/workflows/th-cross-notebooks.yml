@@ -472,7 +472,8 @@ jobs:
       # Nonexistent paths are skipped, so targets that do not use a given
       # tree simply ignore it.
       - name: Restore per-target cache
-        uses: actions/cache@v5
+        id: target-cache
+        uses: actions/cache/restore@v5
         with:
           path: |
             ~/cross-ghc-current/stage3-${{ matrix.target }}
@@ -519,6 +520,31 @@ jobs:
             --marker "century=9261915075" \
             --marker "large=3428746875" \
             --marker "ONE_GHC_SHA256="
+
+      - name: Check if stage3 target libraries completed
+        id: stage3-ready
+        if: always() && steps.target-cache.outputs.cache-hit != 'true'
+        run: |
+          if [ -d "$HOME/cross-ghc-current/stage3-${{ matrix.target }}/exported-conf" ]; then
+            echo "ready=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Save per-target cache
+        if: always() && steps.target-cache.outputs.cache-hit != 'true' && steps.stage3-ready.outputs.ready == 'true'
+        uses: actions/cache/save@v5
+        with:
+          path: |
+            ~/cross-ghc-current/stage3-${{ matrix.target }}
+            ~/cross-ghc-current/downloads
+            ~/cross-ghc-current/emsdk
+            ~/cross-ghc-current/em-cache
+            ~/cross-ghc-current/wasm-sdk-dist
+            ~/cross-ghc-current/llvm-mingw-ucrt
+            ~/cross-ghc-current/node-dist-*
+            ~/cross-ghc-current/windows-ffi-ucrt
+          key: th-cross-stage3-v2-${{ matrix.target }}-${{ matrix.arch }}-${{ needs.plan.outputs.flake_hash }}-${{ needs.plan.outputs.ghc_commit }}-${{ needs.plan.outputs.cabal_commit }}
 
       - name: Upload executed notebook (HTML & ipynb)
         if: always()
@@ -610,7 +636,8 @@ jobs:
       # Nonexistent paths are skipped, so targets that do not use a given
       # tree simply ignore it.
       - name: Restore per-target cache
-        uses: actions/cache@v5
+        id: target-cache
+        uses: actions/cache/restore@v5
         with:
           path: |
             ~/cross-ghc-current/stage3-${{ matrix.target }}
@@ -675,6 +702,32 @@ jobs:
             --marker "century=9261915075" \
             --marker "large=3428746875" \
             --marker "ONE_GHC_SHA256="
+
+      - name: Check if stage3 target libraries completed
+        id: stage3-ready
+        if: always() && steps.target-cache.outputs.cache-hit != 'true'
+        run: |
+          if [ -d "$HOME/cross-ghc-current/stage3-${{ matrix.target }}/exported-conf" ]; then
+            echo "ready=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Save per-target cache
+        if: always() && steps.target-cache.outputs.cache-hit != 'true' && steps.stage3-ready.outputs.ready == 'true'
+        uses: actions/cache/save@v5
+        with:
+          path: |
+            ~/cross-ghc-current/stage3-${{ matrix.target }}
+            ~/cross-ghc-current/downloads
+            ~/cross-ghc-current/emsdk
+            ~/cross-ghc-current/em-cache
+            ~/cross-ghc-current/wasm-sdk-dist
+            ~/cross-ghc-current/llvm-mingw-ucrt
+            ~/cross-ghc-current/node-dist-*
+            ~/cross-ghc-current/windows-ffi-ucrt
+            ~/cross-ghc-current/wine-macos
+          key: th-cross-stage3-v2-${{ matrix.target }}-${{ matrix.arch }}-${{ needs.plan.outputs.flake_hash }}-${{ needs.plan.outputs.ghc_commit }}-${{ needs.plan.outputs.cabal_commit }}
 
       - name: Upload executed notebook (HTML & ipynb)
         if: always()

@@ -138,25 +138,25 @@ avail=$(df -Pk "$CROSS_ROOT" | awk 'NR==2 {print $4}')
 (( avail >= MIN_FREE_GB*1024*1024 )) || fail "Allow at least ${MIN_FREE_GB} GiB free at $CROSS_ROOT."
 printf '%s\n' "$CROSS_ROOT" > "$HOME/.cross-ghc-wasm-root"
 {
-  printf 'CROSS_ROOT=%q\n' "$CROSS_ROOT"
-  printf 'DIST=%q\n' "$DIST"
-  printf 'GHC_SRC=%q\n' "$GHC_SRC"
-  printf 'CABAL_SRC=%q\n' "$CABAL_SRC"
-  printf 'BOOT_GHC=%q\n' "${BOOT_GHC:-ghc-9.8.4}"
-  printf 'BOOT_CABAL=%q\n' "${BOOT_CABAL:-cabal}"
-  printf 'MAKE_BIN=%q\n' "${MAKE_BIN:-make}"
-  printf 'SRC=%q\n' "$SRC"
-  printf 'CABAL=%q\n' "$CABAL"
-  printf 'STAGE3=%q\n' "$STAGE3"
-  printf 'FIBO=%q\n' "$FIBO"
-  printf 'WASM_SDK=%q\n' "$WASM_SDK"
-  printf 'BUILD_JOBS=%q\n' "${BUILD_JOBS:-4}"
-  printf 'GHC_JOBS=%q\n' "${GHC_JOBS:-2}"
-  printf 'BUILD_ARCH=%q\n' "$BUILD_ARCH"
-  printf 'BUILD_OS=%q\n' "$BUILD_OS"
-  printf 'BUILD_VENDOR=%q\n' "$BUILD_VENDOR"
-  printf 'BUILD_PLATFORM=%q\n' "$BUILD_PLATFORM"
-  printf 'MIN_FREE_GB=%q\n' "$MIN_FREE_GB"
+  printf 'export CROSS_ROOT=%q\n' "$CROSS_ROOT"
+  printf 'export DIST=%q\n' "$DIST"
+  printf 'export GHC_SRC=%q\n' "$GHC_SRC"
+  printf 'export CABAL_SRC=%q\n' "$CABAL_SRC"
+  printf 'export BOOT_GHC=%q\n' "${BOOT_GHC:-ghc-9.8.4}"
+  printf 'export BOOT_CABAL=%q\n' "${BOOT_CABAL:-cabal}"
+  printf 'export MAKE_BIN=%q\n' "${MAKE_BIN:-make}"
+  printf 'export SRC=%q\n' "$SRC"
+  printf 'export CABAL=%q\n' "$CABAL"
+  printf 'export STAGE3=%q\n' "$STAGE3"
+  printf 'export FIBO=%q\n' "$FIBO"
+  printf 'export WASM_SDK=%q\n' "$WASM_SDK"
+  printf 'export BUILD_JOBS=%q\n' "${BUILD_JOBS:-4}"
+  printf 'export GHC_JOBS=%q\n' "${GHC_JOBS:-2}"
+  printf 'export BUILD_ARCH=%q\n' "$BUILD_ARCH"
+  printf 'export BUILD_OS=%q\n' "$BUILD_OS"
+  printf 'export BUILD_VENDOR=%q\n' "$BUILD_VENDOR"
+  printf 'export BUILD_PLATFORM=%q\n' "$BUILD_PLATFORM"
+  printf 'export MIN_FREE_GB=%q\n' "$MIN_FREE_GB"
   printf 'export CABAL_DIR=%q\n' "$CROSS_ROOT/cabal-home"
   cat <<'EOF'
 cross_enter() {
@@ -287,7 +287,12 @@ SYSROOT=$(find "$WASM_SDK" -path '*share/wasi-sysroot' -maxdepth 5 -type d | hea
 [ -f "$SYSROOT/include/wasm32-wasi/ffi.h" ] || \
   { echo "libffi headers missing from the WASI sysroot ($SYSROOT)" >&2; exit 1; }
 mkbridge() { printf '#!/bin/sh\nexec "%s" "$@"\n' "$2" > "$WASM_SDK/bin/$1"; chmod +x "$WASM_SDK/bin/$1"; }
-llvm_or_sdk() { command -v "$1" || echo "$SDK_BIN/$2"; }
+llvm_or_sdk() {
+  if [ -x "$SDK_BIN/$1" ]; then echo "$SDK_BIN/$1"
+  elif [ -x "$SDK_BIN/$2" ]; then echo "$SDK_BIN/$2"
+  else command -v "$1"
+  fi
+}
 mkbridge wasm32-unknown-wasi-clang "$SDK_BIN/clang"
 mkbridge wasm32-unknown-wasi-clang++ "$SDK_BIN/clang++"
 mkbridge wasm32-unknown-wasi-ar "$(llvm_or_sdk llvm-ar ar)"
@@ -295,20 +300,20 @@ mkbridge wasm32-unknown-wasi-ranlib "$(llvm_or_sdk llvm-ranlib ranlib)"
 mkbridge wasm32-unknown-wasi-nm "$(llvm_or_sdk llvm-nm nm)"
 mkbridge wasm32-unknown-wasi-objdump "$(llvm_or_sdk llvm-objdump objdump)"
 export PATH="$WASM_SDK/bin:$PATH"
-WASM_LD=$(command -v wasm-ld || echo "$SDK_BIN/wasm-ld")
-WASM_LLC=$(command -v llc || echo "$SDK_BIN/llc")
-WASM_OPT=$(command -v opt || echo "$SDK_BIN/opt")
-WASM_AS=$(command -v llvm-as || echo "$SDK_BIN/llvm-as")
+WASM_LD=$([ -x "$SDK_BIN/wasm-ld" ] && echo "$SDK_BIN/wasm-ld" || command -v wasm-ld)
+WASM_LLC=$([ -x "$SDK_BIN/llc" ] && echo "$SDK_BIN/llc" || command -v llc)
+WASM_OPT=$([ -x "$SDK_BIN/opt" ] && echo "$SDK_BIN/opt" || command -v opt)
+WASM_AS=$([ -x "$SDK_BIN/llvm-as" ] && echo "$SDK_BIN/llvm-as" || command -v llvm-as)
 for t in "$WASM_LD" "$WASM_LLC" "$WASM_OPT" "$WASM_AS"; do
   [ -x "$t" ] || { echo "missing LLVM tool: $t" >&2; exit 1; }
 done
 {
-  printf 'WASM_BIN=%q\n' "$WASM_SDK/bin"
-  printf 'WASM_SYSROOT=%q\n' "$SYSROOT"
-  printf 'WASM_LD=%q\n' "$WASM_LD"
-  printf 'WASM_LLC=%q\n' "$WASM_LLC"
-  printf 'WASM_OPT=%q\n' "$WASM_OPT"
-  printf 'WASM_AS=%q\n' "$WASM_AS"
+  printf 'export WASM_BIN=%q\n' "$WASM_SDK/bin"
+  printf 'export WASM_SYSROOT=%q\n' "$SYSROOT"
+  printf 'export WASM_LD=%q\n' "$WASM_LD"
+  printf 'export WASM_LLC=%q\n' "$WASM_LLC"
+  printf 'export WASM_OPT=%q\n' "$WASM_OPT"
+  printf 'export WASM_AS=%q\n' "$WASM_AS"
 } >> "$CROSS_ROOT/gate-wasm.env"
 cp "$CROSS_ROOT/gate-wasm.env" "$CROSS_ROOT/gate.env"
 wasm32-unknown-wasi-clang --version | head -1
@@ -975,10 +980,10 @@ constraints:
   system-cxx-std-lib source
 EOF
 export DERIVE_CONSTANTS GENAPPLY
-DERIVE_CONSTANTS="$DIST/bin/deriveConstants"
-GENAPPLY="$DIST/bin/genapply"
+DERIVE_CONSTANTS=$(cat "$CROSS_ROOT/deriveConstants.path")
+GENAPPLY=$(cat "$CROSS_ROOT/genapply.path")
 export NM="$WASM_BIN/wasm32-unknown-wasi-nm"
-export OBJDUMP="$(command -v llvm-objdump)"
+export OBJDUMP="$WASM_BIN/wasm32-unknown-wasi-objdump"
 unset CC CXX AR RANLIB || true
 cd "$STAGE3"
 cabal_build() {
