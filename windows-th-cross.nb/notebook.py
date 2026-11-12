@@ -1012,33 +1012,113 @@ fi
 git -C "$ISERV_SRC" checkout -- .
 git -C "$ISERV_SRC" rev-parse HEAD
 
-# Ensure the Windows interpreter initializes the RTS object linker and loads
-# ucrtbase.dll onto the head of opened_dlls before msvcrt.dll, so __imp_*
-# CRT symbols in ghc-internal (such as __imp__fstati64) resolve against UCRT.
-python3 - "$ISERV_SRC/src/IServ/Remote/Interpreter.hs" <<'PY_ISERV_UCRT'
-import pathlib, sys
-p = pathlib.Path(sys.argv[1])
-src = p.read_text()
-imp = "import GHCi.ResolvedBCO\n"
-imp_patch = (
-    imp
-    + "import GHCi.ObjLink (initObjLinker, ShouldRetainCAFs(..), loadDLL)\n"
-    + "import System.Info (os)\n"
+# Export all UCRT symbols referenced by $STAGE3 static archives in
+# iserv-proxy-interpreter.exe's rtsExtraSyms() table (cbits/symbols.x86_64-windows.c).
+# Under Wine, transitive Win32 DLL imports load msvcrt.dll ahead of ucrtbase.dll
+# in opened_dlls, so any CRT symbol not in symhash (such as __imp__fstati64)
+# would otherwise resolve to msvcrt.dll while __rts_swopen (in symhash) opens
+# file descriptors in ucrtbase.dll.
+python3 - "$ISERV_SRC/cbits/symbols.x86_64-windows.c" \
+  "$LLVM_MINGW/bin/x86_64-w64-mingw32-nm" \
+  "$LLVM_MINGW/x86_64-w64-mingw32/lib/libucrt.a" \
+  "$STAGE3" \
+  "$SRC/rts/RtsSymbols.c" <<'PY_ISERV_UCRT'
+import pathlib, re, struct, subprocess, sys
+
+c_file = pathlib.Path(sys.argv[1])
+nm_bin = sys.argv[2]
+libucrt = pathlib.Path(sys.argv[3])
+stage3 = pathlib.Path(sys.argv[4])
+rts_syms_file = pathlib.Path(sys.argv[5])
+
+def read_ar_syms(ar_path: pathlib.Path) -> set[str]:
+    data = ar_path.read_bytes()
+    if not data.startswith(b"!<arch>\n") or data[8:10] != b"/ ":
+        return set()
+    size = int(data[56:66].decode("ascii", "replace").strip() or "0")
+    body = data[68:68 + size]
+    if len(body) < 4:
+        return set()
+    count = struct.unpack(">I", body[:4])[0]
+    raw = body[4 + 4 * count:]
+    return {
+        s.decode("ascii", "replace")
+        for s in raw.split(b"\x00")
+        if s and re.match(rb"^[A-Za-z_][A-Za-z0-9_]*$", s)
+    }
+
+src = c_file.read_text()
+existing = set(re.findall(r"\bSYM\(\s*([A-Za-z_][A-Za-z0-9_]*)\s*\)", src))
+existing.update(re.findall(r'"([A-Za-z_][A-Za-z0-9_]*)"', src))
+existing.update({"_assert", "__imp__assert", "__imp___msvcrt_assert"})
+if rts_syms_file.exists():
+    rts_src = rts_syms_file.read_text(errors="replace")
+    existing.update(re.findall(r"\bSymI_[A-Za-z0-9_]*\(\s*([A-Za-z_][A-Za-z0-9_]*)", rts_src))
+
+ucrt_defs = read_ar_syms(libucrt)
+ucrt_types = {}
+res = subprocess.run([nm_bin, "-s", str(libucrt)], capture_output=True, text=True, errors="replace")
+for line in res.stdout.splitlines():
+    m_map = re.match(r"^([A-Za-z_][A-Za-z0-9_]*)\s+in\s+\S+", line)
+    if m_map:
+        ucrt_defs.add(m_map.group(1))
+        continue
+    m_sym = re.match(r"^[0-9a-fA-F]+\s+([A-TV-Z])\s+([A-Za-z_][A-Za-z0-9_]*)$", line)
+    if m_sym:
+        ucrt_types[m_sym.group(2)] = m_sym.group(1)
+        ucrt_defs.add(m_sym.group(2))
+
+ucrt_defs = {
+    s for s in ucrt_defs
+    if not s.startswith("_head_") and not s.endswith("_iname") and s != "__NULL_IMPORT_DESCRIPTOR"
+}
+
+archives = sorted(stage3.rglob("libHS*.a"))
+assert archives, f"No libHS*.a archives found under {stage3}"
+stage3_undefs = set()
+stage3_defs = set()
+for a in archives:
+    stage3_defs.update(read_ar_syms(a))
+for i in range(0, len(archives), 20):
+    batch = [str(a) for a in archives[i:i + 20]]
+    u_out = subprocess.check_output([nm_bin, "-u", *batch], text=True, errors="replace")
+    for line in u_out.splitlines():
+        m = re.search(r"\bU\s+([A-Za-z_][A-Za-z0-9_]*)$", line)
+        if m:
+            stage3_undefs.add(m.group(1))
+    d_res = subprocess.run([nm_bin, "--defined-only", *batch], capture_output=True, text=True, errors="replace")
+    for line in d_res.stdout.splitlines():
+        m = re.match(r"^[0-9a-fA-F]+\s+[A-TV-Z]\s+([A-Za-z_][A-Za-z0-9_]*)$", line)
+        if m:
+            stage3_defs.add(m.group(1))
+
+wanted = sorted((stage3_undefs - stage3_defs - existing) & ucrt_defs)
+assert "__imp__fstati64" in wanted, (
+    f"Expected __imp__fstati64 in wanted (ucrt_defs={len(ucrt_defs)}, "
+    f"stage3_undefs={len(stage3_undefs)}, wanted={len(wanted)})"
 )
-assert imp in src, "expected GHCi.ResolvedBCO import"
-src = src.replace(imp, imp_patch, 1)
-target = "\n  uninterruptibleMask $ serv verbose (hook verbose noLoadCall base_path pipe) pipe"
-replacement = (
-    "\n  when (os == \"mingw32\") $ do\n"
-    "    initObjLinker RetainCAFs\n"
-    "    _ <- loadDLL \"ucrtbase.dll\"\n"
-    "    pure ()"
-    + target
-)
-assert target in src, "expected serv call in Interpreter.hs"
-src = src.replace(target, replacement, 1)
-p.write_text(src)
-print("Patched IServ.Remote.Interpreter to preload ucrtbase.dll on Windows")
+
+decls = []
+entries = []
+for idx, sym in enumerate(wanted):
+    alias = f"iserv_ucrt_{idx}"
+    if sym.startswith("__imp_"):
+        decls.append(f'extern void *{alias} __asm__("{sym}");')
+        entries.append(f'    {{ "{sym}", (void*)&{alias}, STRENGTH_WEAK, SYM_TYPE_INDIRECT_DATA }},')
+    elif ucrt_types.get(sym) in ("D", "B", "R", "C"):
+        decls.append(f'extern char {alias} __asm__("{sym}");')
+        entries.append(f'    {{ "{sym}", (void*)&{alias}, STRENGTH_WEAK, SYM_TYPE_DATA }},')
+    else:
+        decls.append(f'extern void {alias}(void) __asm__("{sym}");')
+        entries.append(f'    {{ "{sym}", (void*)&{alias}, STRENGTH_WEAK, SYM_TYPE_CODE }},')
+
+table_hdr = "RtsSymbolVal my_iserv_syms[] = {\n"
+sentinel = "    { 0, 0, STRENGTH_NORMAL, 1 } /* sentinel */"
+assert table_hdr in src and sentinel in src, "Unexpected cbits/symbols.x86_64-windows.c layout"
+src = src.replace(table_hdr, "\n".join(decls) + "\n\n" + table_hdr, 1)
+src = src.replace(sentinel, "\n".join(entries) + "\n" + sentinel, 1)
+c_file.write_text(src)
+print(f"Registered {len(wanted)} UCRT symbols in {c_file.name}")
 PY_ISERV_UCRT
 
 mkdir -p "$CROSS_ROOT/proxy-native"

@@ -1115,6 +1115,32 @@ print('Registered', len(registrations), 'host library units')
 PY_REGISTER
 cp "$CROSS_ROOT/sources.lock" "$STAGE3/sources.lock"
 fi
+# Cabal builds ghc-internal with both library-vanilla and shared enabled, so it
+# compiles cbits/RtsIface.c with -fPIC (-D__PIC__) and archives that PIC object
+# into libHSghc-internal*.a. On wasm32, RtsIfaceSymbols.h gates JSFFI symbols
+# (JSVal_con_info, raiseJSException_closure, threadDelay_closure) behind
+# defined(wasm32_HOST_ARCH) && defined(__PIC__). Recompile RtsIface.c without
+# __PIC__ for the static archive so standalone WASI binaries do not pull in
+# ghc_wasm_jsffi imports, while leaving libHSghc-internal*.so untouched for TH.
+mkdir -p "$STAGE3/rts-iface-static"
+inc_flags=("-I$SRC/libraries/ghc-internal/include" "-I$SRC/rts/include")
+for pkg in rts-headers ghc-internal; do
+  for d in $("$DIST/bin/$TRIPLE-ghc-pkg" --package-db="$tdb" field "$pkg" include-dirs --simple-output); do
+    inc_flags+=("-I$d")
+  done
+done
+"$DIST/bin/$TRIPLE-ghc" -c -O0 -static -fno-PIC -optc-fno-PIC -optc-U__PIC__ \
+  -ghcversion-file="$SRC/rts/include/ghcversion.h" \
+  "${inc_flags[@]}" \
+  "$SRC/libraries/ghc-internal/cbits/RtsIface.c" \
+  -o "$STAGE3/rts-iface-static/RtsIface.o"
+! "$WASM_BIN/wasm32-unknown-wasi-nm" -u "$STAGE3/rts-iface-static/RtsIface.o" | grep -q JSVal_con_info
+find "$STAGE3/dist-newstyle" -name 'RtsIface.o' -type f -exec cp "$STAGE3/rts-iface-static/RtsIface.o" {} \;
+find "$STAGE3/dist-newstyle" "$STAGE3/store" -name 'libHSghc-internal*.a' -type f | while read -r a; do
+  "$WASM_BIN/wasm32-unknown-wasi-ar" d "$a" RtsIface.o || true
+  "$WASM_BIN/wasm32-unknown-wasi-ar" r "$a" "$STAGE3/rts-iface-static/RtsIface.o"
+  "$WASM_BIN/wasm32-unknown-wasi-ranlib" "$a"
+done
 mkdir -p "$STAGE3/dynlib"
 find "$STAGE3/dist-newstyle" "$STAGE3/store" -name '*.so' -type f | while read -r so; do
   ln -sf "$so" "$STAGE3/dynlib/$(basename "$so")"
