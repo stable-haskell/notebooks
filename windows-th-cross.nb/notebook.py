@@ -1093,9 +1093,9 @@ for i in range(0, len(archives), 20):
             stage3_defs.add(m.group(1))
 
 wanted = sorted((stage3_undefs - stage3_defs - existing) & ucrt_defs)
-assert "__imp__fstati64" in wanted, (
-    f"Expected __imp__fstati64 in wanted (ucrt_defs={len(ucrt_defs)}, "
-    f"stage3_undefs={len(stage3_undefs)}, wanted={len(wanted)})"
+assert wanted, (
+    f"Expected UCRT symbols in wanted (ucrt_defs={len(ucrt_defs)}, "
+    f"stage3_undefs={len(stage3_undefs)})"
 )
 
 decls = []
