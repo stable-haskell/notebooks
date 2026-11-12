@@ -29,66 +29,26 @@ def code(cid, text):
 md("js-title", r"""
 # Cross Compiling Haskell with GHC 9.14 and Cabal — to JavaScript
 
-This walks end-to-end through cross-compiling Haskell with stable-haskell
-GHC 9.14 and the cross-aware Cabal to **JavaScript
-(`javascript-unknown-ghcjs`)**, evaluating Template Haskell splices via GHC's
-JS interpreter in Node.js while running `Setup.hs` and build tools natively
-on the build machine.
+Cross-compile to **JavaScript (`javascript-unknown-ghcjs`)**: Template Haskell splices evaluate in Node via `ghc-interp.js`, while `Setup.hs` and build tools run natively on the build machine.
 
-What you'll do:
-
-1. Set up a build tree (`CROSS_ROOT`) with per-machine build identity.
-2. Check the **JS & C toolchain** (`emcc`, `node`) the target needs.
-3. Fetch and build GHC 9.14 plus the cross-aware Cabal from source (or reuse a cached build).
-4. Prepare the JavaScript target source tree and teach GHC about `javascript-unknown-ghcjs`.
-5. Build the JS target libraries (`stage3-js`).
-6. Smoke-test the target context: a TH splice evaluated in Node.
-7. Build and run the `cross-report` application — catalogue validation at compile time, Fibonacci residues at runtime.
-8. Break the splice input on purpose, then prove the compiler is still one binary.
-
-There are two changes worth keeping in mind:
-
-* **GHC selects a target's settings and libraries.** The compiler executable stays native. Invoking it as `javascript-unknown-ghcjs-ghc` selects that target directory.
-* **Cabal accepts compiler commands for both machines.** `-w` selects the compiler for the application and its libraries; `-W` selects the native compiler for setup programs and build tools.
-
-Both GHC commands resolve to the same executable. The target-prefixed name selects a different set of settings and libraries. The native and target commands report different platforms and use separate package databases.
+1. **Single native GHC binary**: invoking `javascript-unknown-ghcjs-ghc` (a symlink to native `ghc`) selects `lib/targets/javascript-unknown-ghcjs/lib/{settings,package.conf.d}`.
+2. **Dual-compiler Cabal**: `-w` selects `javascript-unknown-ghcjs-ghc` (`host:*`), `-W` selects native `ghc` (`build:*`) for `Setup.hs` and codegen tools.
 
 | Part | Compiled for | Runs where |
 |---|---|---|
 | GHC and Cabal | build machine | build machine |
 | `Setup.hs`, `deriveConstants`, `genapply` | build machine | build machine |
-| Splice code and the JS interpreter | JavaScript | Node on the build machine |
-| Report application and its libraries | JavaScript | Node here; a browser or Node when deployed |
+| Splice code and `ghc-interp.js` | JavaScript | Node on the build machine |
+| Report app and its libraries | JavaScript | Node here; browser or Node when deployed |
 
-Cabal calls the application's machine the **host**. GHC calls it the **target**. This notebook uses *build machine* and *target* below, and spells out Cabal's names where they appear in project files.
-
-## Before we start
-
-We use the current [`stable-haskell/ghc:stable-ghc-9.14`](https://github.com/stable-haskell/ghc/tree/stable-ghc-9.14) branch and Andrea Bedini's [`andrea/feature/cross-compilation-2`](https://github.com/andreabedini/cabal/tree/andrea/feature/cross-compilation-2) branch. We will build both from source. A native bootstrap GHC **9.8.4** and a working bootstrap `cabal` are still needed to build the tools written in Haskell.
-
-This is a Jupyter notebook with a **Python 3 kernel**. Every executable cell starts with `%%bash`; Jupyter runs that cell in a fresh shell and reports a non-zero exit as a failed cell. Run the cells in order and resolve a failure before continuing. Configuration is saved under `CROSS_ROOT`, so it survives kernel restarts. From a shell with Jupyter installed:
-
-```sh
-jupyter notebook "JS TH Cross.ipynb"
-```
-
-Use a disposable machine (Linux or macOS), GNU Make **4.4 or newer** (`gmake` on some systems; this flake provides it), and a native GHC **9.8.4** plus a working bootstrap `cabal`. If needed, install these with GHCup before opening Jupyter:
-
-```sh
-ghcup install ghc 9.8.4
-ghcup install cabal latest
-```
-
-Put `ghc-9.8.4` and `cabal` on Jupyter's `PATH`, or set `BOOT_GHC` and `BOOT_CABAL` to their absolute paths before starting it. Set `MAKE_BIN` if your GNU Make 4.4+ has another name. Building the compiler is substantially more work than building its target libraries: allow at least 32 GiB of free disk for a fresh build (4 GiB suffices once `$DIST/bin/ghc` exists) and plan for a machine with 16 GiB RAM or more. Set `BUILD_JOBS` for package and Make parallelism (default 4) and `GHC_JOBS` for modules within each compiler process (default 2). Set `CROSS_ROOT` before starting Jupyter to choose a location; keep it absolute and free of whitespace.
+Prerequisites: set `CROSS_ROOT` (absolute, no whitespace) before starting Jupyter; `GHC_REF`/`CABAL_REF` pin the source refs (defaults track branch heads, resolved in `sources.lock`); run via `nix develop` for the pinned `emcc`/`node`/LLVM toolchain.
 """)
 
 # ---- 1. place to build ----------------------------------------------------
 md("js-place", r"""
 ## A place to build
 
-First we save the paths used by later cells. This is a complete source build, so use a fresh tree. Set `CROSS_ROOT` before starting Jupyter to choose a location (default: `~/cross-ghc-current`); keep it absolute and free of whitespace.
-
-The native GHC source and target-library source use separate trees. We will leave the native compiler's RTS configuration alone and make the target-specific vanilla-RTS edit only in the target tree.
+`CROSS_ROOT` holds the native GHC tree, target tree, Cabal store, and app. Native and target sources use separate checkouts; the vanilla-`v` RTS edit applies to the target tree only.
 """)
 
 code("js-gate", r"""
@@ -195,9 +155,8 @@ printf 'Build tree: %s\nBuild machine: %s (%s)\n' "$CROSS_ROOT" "$BUILD_PLATFORM
 md("js-tools-md", r"""
 ## The JS & C toolchain (`emcc`, `node`)
 
-Before building Haskell, let us make sure the JavaScript target's tools are available. The JS backend links through **emscripten** (`emcc`, `em++`, `emar`, `emranlib`, `emnm`), and GHC's JS interpreter (`ghc-interp.js`) runs in **Node.js 22+** — Node is also what runs the final `.jsexe/all.js` bundle. The target configure step inspects objects with `llvm-objdump` (or `llvm-objdump-19`); it does not need to execute them.
-
-On both Linux and macOS these come from `PATH` — this flake provides them (pinned `nodejs_22`, `emscripten`, `llvmPackages.llvm`), so inside `nix develop` there is nothing to install. Outside Nix the cell falls back to Homebrew on macOS, and to an `emsdk` checkout plus a static Node download on Linux.
+The JS backend links via emscripten (`emcc`, `emar`, `emranlib`) and inspects objects with `llvm-objdump`. `ghc-interp.js` and the final `.jsexe/all.js` run under Node.js 22+.
+Inside `nix develop` all three are pinned; outside Nix the cell falls back to Homebrew (macOS) or an `emsdk` checkout plus static Node (Linux).
 """)
 
 code("js-tools", r"""
@@ -296,23 +255,9 @@ echo "JS toolchain ok on $BUILD_PLATFORM"
 md("js-fetch-md", r"""
 ## Fetching GHC 9.14 and the cross-aware Cabal
 
-Let us fetch the source we actually want to use. The branch names are defaults, so a fresh checkout follows their current heads. `sources.lock` records the resolved commits. `GHC_REF` and `CABAL_REF` can select another ref when reproducing a recorded build.
-
-There are two Cabal roles during compiler construction. GHC's Makefile bootstraps a Cabal from its own `cabal.project.stage0`; that builder implements the local store layout its rules expect. The Cabal we build from **Andrea's branch** is the one we use for target libraries and the application. Passing Andrea's Cabal directly to that Makefile would not make its layout assumptions disappear.
-
-| Tool | Source | Purpose |
-|---|---|---|
-| Bootstrap GHC and Cabal | existing native installation | build the Haskell tools |
-| GHC's internal builder | GHC tree's `cabal.project.stage0` | construct native stage1/stage2 and the distribution |
-| Tutorial Cabal | Andrea's cross-compilation branch | build target libraries and the application with native and target compilers |
-
-### Bootstrapping an empty target
-
-At the branch heads tested here, Cabal needs a small fix before it can bootstrap the target libraries. It pins GHC's wired-in units to installed unit IDs, even with `allow-boot-library-installs: True`. Our new target database has no `ghc-internal` yet.
-
-The build cell permits a missing wired-in unit to be built only when boot-library installation is explicitly enabled. Existing installed units retain their exact-unit pins. This is a local patch to Andrea's branch, included in the commands below; it is not behaviour we can attribute to the unmodified branch.
-
-If `$CABAL` and `$DIST/bin/ghc` already exist and `build-sources.lock` matches `sources.lock` — for example from a CI cache or an earlier notebook run in the same `CROSS_ROOT` — the build cell reuses them instead of rebuilding.
+Stage 2 native GHC comes from `stable-haskell/ghc:stable-ghc-9.14`; tutorial Cabal from `andrea/feature/cross-compilation-2`, plus a local wired-in boot-library patch (a missing `ghc-internal` may build only with `allow-boot-library-installs: True`).
+GHC's Makefile uses its own `cabal.project.stage0` builder; Andrea's Cabal is the one used for target libraries and the app.
+`GHC_REF`/`CABAL_REF` select refs; `sources.lock` records the commits. An existing `$CABAL` + `$DIST/bin/ghc` matching `build-sources.lock` is reused, not rebuilt.
 """)
 
 code("js-fetch", r"""
@@ -355,9 +300,8 @@ fi
 md("js-build-md", r"""
 ## Building GHC 9.14 and the cross-aware Cabal
 
-This cell builds the tutorial `cabal` from Andrea's branch (with the wired-in boot-library patch) and the native GHC `stage2` distribution. It is the slow cell — the source build dominates the walkthrough's running time.
-
-**Cache-aware:** if `$CABAL` and `$DIST/bin/ghc` already exist and `build-sources.lock` matches `sources.lock` plus the recorded patch checksum, the cell reuses them and skips rebuilding. That is the path taken when resuming in a `CROSS_ROOT` restored from a CI cache or from an earlier notebook run.
+Builds tutorial `cabal` (with the boot-library patch) then the native stage 2 distribution — the slow cell.
+Cache-aware: a `$CABAL` + `$DIST/bin/ghc` matching `build-sources.lock` plus the patch checksum skips the rebuild. Records `deriveConstants`/`genapply`/`ghc-toolchain-bin` paths for later cells.
 """)
 
 code("js-build", r"""
@@ -455,11 +399,8 @@ echo "Compiler, Cabal and native configuration tools ready."
 md("js-src-md", r"""
 ## One compiler, and a separate target tree
 
-We now have a native GHC distribution built from `stable-ghc-9.14`, and a Cabal built from Andrea's cross-compilation branch. The native distribution is at `ghc-src/_build/dist`. GHC's Makefile also places the native `ghc-toolchain-bin`, `deriveConstants` and `genapply` tools there (their paths were recorded at the end of the build cell).
-
-Let us create a second checkout at the **same GHC commit** for the JavaScript libraries. The vanilla-RTS edit belongs here, after the native distribution has been built. The configure input for `ghc-boot-th-next` is supplied locally; we do not include that package in the target build.
-
-The RTS's three other sublibraries contain `buildable: False` inside JavaScript conditionals. We insert an unconditional field after each sublibrary's `import` to disable those ways for this target build.
+Second checkout at the same GHC commit holds the JavaScript libraries; the vanilla-RTS edit lands here only, after the native distribution is built.
+`rts/rts.cabal` is restricted to vanilla `v` (other sublibraries get unconditional `buildable: False`); `ghc-boot-th-next` input is staged locally and excluded from the target build.
 """)
 
 code("js-src", r"""
@@ -523,13 +464,9 @@ PY_PATCH
 md("js-settings-md", r"""
 ## Teaching GHC about `javascript-unknown-ghcjs`
 
-Run `ghc-toolchain-bin` from the target source tree, where it can find `config.sub`. We supply the emscripten C and C++ compilers and ask for a `settings` file. Emscripten's driver handles compiling, linking and archiving, so `emar`, `emranlib` and `emnm` cover the remaining tools. `--disable-tables-next-to-code` matches the JS backend's expectations.
-
-The directory name matters. The toolchain normalises the platform, but this GHC's command-name lookup uses the full `javascript-unknown-ghcjs` name to locate `lib/targets/<name>/lib`.
-
-The generated settings contain `cross compiling = NO` and a fixed list of RTS ways. Those fields are hardcoded by this version of ghc-toolchain. They do not establish whether the selected code generator and libraries are native. We set the RTS ways to vanilla-only and mark dynamic and profiled libraries as unavailable for this target installation.
-
-GHC also ships its JavaScript support files (`dyld.mjs`, `post-link.mjs`, `prelude.mjs`, `ghc-interp.js`) with the compiler sources. We copy them into the target lib directory, where the backend expects them: `ghc-interp.js` is the interpreter host that evaluates our splices in Node.
+`ghc-toolchain-bin --triple=javascript-unknown-ghcjs` (with `--cc emcc`, `--ar emar`, `--ranlib emranlib`, `--nm emnm`, `--disable-tables-next-to-code`) writes `lib/targets/javascript-unknown-ghcjs/lib/settings` (RTS ways `v`; dynamic/profiled marked unavailable).
+The full `javascript-unknown-ghcjs` name is what GHC's command-name lookup uses to find `lib/targets/<name>/lib`.
+Ships `dyld/post-link/prelude.mjs` plus `ghc-interp.js` (with breakpoint hooks) into the target lib; `javascript-unknown-ghcjs-{ghc,ghc-pkg,hsc2hs}` symlinks select it.
 """)
 
 code("js-settings", r"""
@@ -616,17 +553,9 @@ echo "settings ok"
 md("js-stage3-md", r"""
 ## Building the JS target libraries (`stage3-js`)
 
-Here we use Andrea's Cabal with two compiler configurations. `-w` selects `javascript-unknown-ghcjs`; `-W` selects the native compiler for setup programs and build tools. The `build:any.<package> installed` constraints keep native boot dependencies installed. Unprefixed top-level `source` constraints select the target boot libraries from source.
-
-The branch supports `package host:*` and `package build:*`. We put common target compiler options and static-library choices in `package host:*`. Named package stanzas have no machine prefix in this branch; they supply the individual package flags below. The native boot libraries remain installed, as required by the constraints. The target RTS drops position-independent code (emscripten does not want `-fPIC`), keeps tables-next-to-code off, and uses native bignum. Its C defines take the build machine's identity dynamically from `gate.env`, so the same cell works on Linux and macOS. The initial RTS-related packages use `-no-rts` to break the bootstrap dependency on an RTS we have not built yet. We also pass `--with-compiler` to the `ghc-internal` configure script explicitly: it uses that compiler to generate the primitive modules, and otherwise receives a bare `ghc` command.
-
-We provide an explicit Cabal store under `stage3-js/store`. Andrea's Cabal uses compiler-keyed stores and an in-place package database for local packages. We therefore collect the **host library units from the build plan**, rather than assuming a fixed store layout. Registrations are read with expanded paths and checked after they are copied into the target database. Keep both the store and `dist-newstyle` tree: the registration files refer to artifacts there.
-
-`allow-newer: all` relaxes dependency bounds against the new `base`. This is a compatibility concession; solving successfully is not sufficient to establish package compatibility. The interpreter and application checks follow it.
-
-We explicitly request `all process:lib:process` as well as `all`. Merely listing its tarball in `packages` made it available to the solver but did not build it in this project: it was not in the selected dependency closure. The report's splice needs it. Registrations use `ghc-pkg update`; this GHC's package tool has no `--force-reinstall` option.
-
-The cell is idempotent: if the target database already holds registrations, it skips the build unless `FORCE_STAGE3_REBUILD` is set.
+`cabal.project` uses `build:any.<pkg> installed` to keep native boot deps installed and unprefixed `source` constraints for target boot libraries; `package host:*` sets static/vanilla flags with `--with-gcc=emcc`, and `ghc-internal` gets `--with-compiler=<target ghc>`.
+Builds `rts:lib:nonthreaded-nodebug` first with `-w <target ghc> -W <native ghc>`, then `all`; host units (`"machine": "host"` in `plan.json`) are registered into the target package DB. Idempotent unless `FORCE_STAGE3_REBUILD=1`.
+`allow-newer: all` relaxes bounds against the new `base`; the interpreter and app checks — not solving — establish compatibility.
 """)
 
 code("js-stage3", r"""
@@ -912,13 +841,9 @@ done
 md("js-smoke-md", r"""
 ## Target context & TH smoke test in Node
 
-We have one compiler, running on the build machine. Changing its name selects the target's settings and libraries. That gives us a way to produce target code. Template Haskell asks for one more thing: a place to execute some of that code while the build is still running.
-
-That is the *target context*. For JavaScript, GHC selects **its JavaScript interpreter from the target settings**: `ghc-interp.js` runs in Node, with the filesystem and process facilities available to that Node process. There is no QEMU wrapper here. GHC stays outside, sends interpreter requests, and receives the results. Cabal, `Setup.hs` and native generators also stay on the build machine.
-
-The context must still supply file IO and a working directory: a splice containing `runIO (readFile "catalogue.txt")` opens that file in the interpreter's context from its working directory, not in the native GHC process. We keep the package source directory as the working directory on both sides and use the same relative input names. `addDependentFile` records an input for recompilation; it does not transfer the file.
-
-The cell below compiles a tiny program whose `main` prints the target `(arch, os)` pair lifted through a splice, then runs the resulting `Arch.jsexe/all.js` under Node. If that check succeeds, GHC has exchanged interpreter messages with the Node-hosted interpreter and embedded `("javascript","ghcjs")`.
+The external interpreter `ghc-interp.js` runs hosted by `node`: splices evaluate in Node's filesystem context (`readFile "catalogue.txt"` resolves there), while build-machine IO (`git --version`) stays in native `Setup.hs`.
+The package source directory stays the working directory on both sides; `addDependentFile` records inputs for recompilation without transferring files.
+Compiling `Arch.hs` with `-fexternal-interpreter` and running `arch.jsexe/all.js` under `node` must print `("javascript","ghcjs")`, proving the Node interpreter round-trip.
 """)
 
 code("js-smoke", r"""
@@ -950,13 +875,8 @@ printf 'Splice evaluated for: %s\n' "$out"
 md("js-report-md", r"""
 ## A report prepared at compile time
 
-On to the application. We will keep the Fibonacci generator in a separate module. Imported functions can be used in a top-level splice; moving the generator into the module containing that splice runs into the usual Template Haskell stage restriction. This restriction predates GHC 9.14.
-
-Our catalogue has a label and an index on each line. The generator checks the labels, bounds the index, rejects duplicate labels, and records the file as a compilation dependency. It computes the residues and embeds ordinary Haskell values. Native `Setup.hs` records `git --version` in `build-tool.txt`; the target splice reads and tracks that file too. Both inputs use relative paths from the package source directory, shared with the interpreter's working directory. The splice performs file IO and computation only — it never launches a child process, so the Node-hosted interpreter needs no process support.
-
-At runtime the application loads the embedded table into a `Map Text Integer`. It can list the catalogue, look up one entry, or show where its code was evaluated. It does not read the catalogue or run git at runtime.
-
-The next cell writes the six application files. Cabal compiles `Setup.hs` with the build compiler: `process` is a build-side dependency there. `TH.hs` uses target `template-haskell` and reads the prepared files in the JS interpreter.
+`TH.hs` validates `catalogue.txt` (labels, bounds, unique names), records it via `addDependentFile`, reads `build-tool.txt`, and lifts `(results, arch, os, gitVersion)`; splice file IO runs in the Node interpreter and never spawns processes.
+Native `Setup.hs` (build-side `process` dep) writes `build-tool.txt` from `git --version`. The app embeds the table into a `Map` and serves list/lookup/`--info` with no runtime file IO.
 """)
 
 code("js-report-files", r"""
@@ -1124,15 +1044,9 @@ ls -l "$FIBO"
 md("js-cabal-md", r"""
 ## Giving Cabal both compilers
 
-Here is the application build. `-w` selects `javascript-unknown-ghcjs`. `-W` selects the native compiler. The matching package tools are supplied explicitly too.
-
-`Setup.hs` imports Cabal and `process`; it is compiled with the build compiler and invokes native `git`. `TH.hs` uses target `template-haskell` and reads the prepared files in the Node-hosted interpreter. A native `process` dependency belongs to Setup; target splice dependencies belong to the interpreter.
-
-Do not export a cross `CC` globally. Keep the target C compiler in the target settings, and supply target-specific program options to Cabal where needed (`--with-gcc=emcc` went into the stage3 build). An ambient cross compiler can contaminate native setup configuration.
-
-The build log must contain `BUILD_MACHINE_ARCH=<build arch>`. We also check the generated plan's `machine` annotations. A first build has work to do; a cached build may not rerun `Setup.hs`. The cell below cleans this small application build before collecting its evidence. It leaves the expensive library build in place.
-
-The target boot libraries in this working tree have in-place unit IDs, while GHC's `--info` still reports the fixed `ghc-internal` ID from its native build. We keep `allow-boot-library-installs` enabled here for the local Cabal fix and explicitly require `any.ghc-internal installed`. This lets the solver use our installed target unit without trying to rebuild it.
+`-w javascript-unknown-ghcjs-ghc` (+ target `ghc-pkg`) builds the app; `-W ghc` (+ native `ghc-pkg`) builds `Setup.hs` and tools. Keep cross `CC` out of the environment; the target CC lives in the target settings.
+Checks `BUILD_MACHINE_ARCH=<build arch>` in the log and `host`/`build` annotations in `plan.json`; `allow-boot-library-installs` + `any.ghc-internal installed` reuses the in-place target unit.
+The cell cleans only this small app build before collecting evidence; the stage 3 library build stays in place.
 """)
 
 code("js-report-build", r"""
@@ -1178,9 +1092,8 @@ printf '%s\n' "$bin" > "$CROSS_ROOT/report-js-bin.path"
 md("js-run-md", r"""
 ## Running the report
 
-Let us check the result. Both its splice and runtime architecture must be `javascript` / `ghcjs`, while the setup log reports the build machine's own architecture.
-
-The catalogue lookups also need to return the right answers. In particular, the large entry is the same `fib(100000) mod 10^10 = 3428746875` used in the earlier example.
+Run `cross-report.jsexe/all.js` under `node`: `--info` must show `SPLICE_ARCH=javascript` / `RUNTIME_ARCH=javascript`, with the setup log reporting the build arch.
+Lookups return `small=55`, `century=9261915075`, `large=3428746875` (`fib(100000) mod 10^10`).
 """)
 
 code("js-run", r"""
@@ -1228,17 +1141,15 @@ century=9261915075
 large=3428746875
 small=55
 ```
-
-If the checks pass, we have exercised both compiler configurations in one Cabal application build. The native setup program ran on the build machine; native Setup recorded the tool version; the target interpreter read the catalogue and provenance file and produced the embedded values; the final JavaScript application used those values under Node.
+Passing means one Cabal build used both compilers: native setup recorded the tool version, the Node interpreter embedded the catalogue values, and the JS app served them.
 """)
 
 # ---- 12. negative splice + single-compiler identity --------------------------
 md("js-negative-md", r"""
 ## Making the splice fail
 
-A useful next check is to give the generator a bad catalogue. `addDependentFile` should cause GHC to revisit the splice, and validation should fail during compilation. This cell temporarily replaces the catalogue, checks for that failure, restores it, and rebuilds. The `trap` also restores the input if the check fails unexpectedly.
-
-Finally, the target names select settings and package databases — but they must still resolve to the same native executable, whose hash must remain unchanged. Adding a target required its libraries and auxiliary tools; it did not require rebuilding GHC.
+A bad catalogue must fail compilation: `addDependentFile` triggers re-evaluation and validation rejects it; the cell restores the file (via `trap`) and rebuilds.
+Target names select settings and package DBs but resolve to the same native binary — verified by `ONE_GHC_SHA256=` hash equality, with no GHC rebuild for the new target.
 """)
 
 code("js-negative", r"""
@@ -1288,16 +1199,10 @@ echo "ONE_GHC_SHA256=$(sha256_file "$DIST/bin/ghc")"
 md("js-refs", r"""
 ## Going further & references
 
-To try another application, replace the report package and keep the same compiler pair. Its target dependencies must be available or buildable, and any native generators must be in Cabal's build graph. TH that performs file or process IO also needs the relevant files and tools visible to the interpreter — for JavaScript, that means the Node process hosting `ghc-interp.js`.
-
-The same one-compiler arrangement covers the other backends: each target gets its own settings file, package database and target-prefixed symlinks, while the compiler executable stays native. The target's execution environment is the separate choice — Node for JavaScript, a WASI runtime for `wasm32-wasi`, QEMU for foreign Linux targets.
-
-### Source references
-
-* [GHC branch `stable-ghc-9.14`](https://github.com/stable-haskell/ghc/tree/stable-ghc-9.14) and [Andrea's Cabal branch](https://github.com/andreabedini/cabal/tree/andrea/feature/cross-compilation-2).
-* [GHC target selection](https://github.com/stable-haskell/ghc/blob/stable-ghc-9.14/ghc/Main.hs), [target settings reader](https://github.com/stable-haskell/ghc/blob/stable-ghc-9.14/compiler/GHC/Settings/IO.hs), and [toolchain settings generator](https://github.com/stable-haskell/ghc/blob/stable-ghc-9.14/utils/ghc-toolchain/exe/Main.hs).
-* [RTS sublibraries](https://github.com/stable-haskell/ghc/blob/stable-ghc-9.14/rts/rts.cabal).
-* [haskell.nix cross Template Haskell documentation](https://github.com/input-output-hk/haskell.nix/blob/master/docs/tutorials/cross-template-haskell.md).
+Reuse the same compiler pair for another app: target deps must be installed/buildable, native generators in the build graph, and splice IO files visible to the Node-hosted `ghc-interp.js` (same pattern covers WASI/QEMU backends).
+* [GHC `stable-ghc-9.14`](https://github.com/stable-haskell/ghc/tree/stable-ghc-9.14) and [Andrea's Cabal branch](https://github.com/andreabedini/cabal/tree/andrea/feature/cross-compilation-2).
+* [Target selection](https://github.com/stable-haskell/ghc/blob/stable-ghc-9.14/ghc/Main.hs), [settings reader](https://github.com/stable-haskell/ghc/blob/stable-ghc-9.14/compiler/GHC/Settings/IO.hs), [toolchain generator](https://github.com/stable-haskell/ghc/blob/stable-ghc-9.14/utils/ghc-toolchain/exe/Main.hs).
+* [RTS sublibraries](https://github.com/stable-haskell/ghc/blob/stable-ghc-9.14/rts/rts.cabal), [haskell.nix cross-TH docs](https://github.com/input-output-hk/haskell.nix/blob/master/docs/tutorials/cross-template-haskell.md).
 """)
 
 

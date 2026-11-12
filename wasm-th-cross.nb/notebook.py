@@ -31,41 +31,29 @@ def code(cid, text):
 md("wasm-th-title", r"""
 # Cross Compiling Haskell with Template Haskell to WebAssembly/WASI
 
-We build [stable-haskell GHC 9.14](https://github.com/stable-haskell/ghc/tree/stable-ghc-9.14)
-and the cross-aware Cabal
+Build [stable-haskell GHC 9.14](https://github.com/stable-haskell/ghc/tree/stable-ghc-9.14)
+and cross-aware Cabal
 ([`andrea/feature/cross-compilation-2`](https://github.com/andreabedini/cabal/tree/andrea/feature/cross-compilation-2))
-from source, teach the compiler about the `wasm32-unknown-wasi` target, build
-its libraries, and evaluate Template Haskell splices for wasm — all on
-**Linux** (`x86_64`, `aarch64`) and **macOS** (`arm64`).
+from source, then cross-compile a TH report generator to `wasm32-unknown-wasi`
+on Linux (`x86_64`, `aarch64`) and macOS (`arm64`).
 
-Key ideas, carried over from the aarch64 walkthrough:
+1. **Single native GHC binary.** `wasm32-unknown-wasi-ghc` is a symlink to native
+   `ghc`, selecting `lib/targets/wasm32-unknown-wasi/lib/{settings,package.conf.d}`.
+2. **Dual-compiler Cabal.** `-w` selects `wasm32-unknown-wasi-ghc` (`host:*`);
+   `-W` selects native `ghc` (`build:*` for `Setup.hs` and build tools).
+3. **Two execution paths.** TH splices run through `dyld.mjs` in Node, loading
+   dynamic `.so` target libraries (hence `RTS ways = "v dyn"`, `shared: True`);
+   the final application links statically
+   (`-static -fno-PIC -optc-fno-PIC -optc-U__PIC__`) and runs under `wasmtime`.
 
-* **One compiler, selected by name.** The compiler executable stays native.
-  Invoking it as `wasm32-unknown-wasi-ghc` selects that target's settings and
-  libraries. Cabal's `-w` picks the application compiler; `-W` picks the
-  native compiler for `Setup.hs` and build tools. All target names resolve to
-  the same binary (verified at the end: `ONE_GHC_SHA256`).
-* **A target context for splices.** The wasm interpreter runs through
-  `dyld.mjs` in Node, which loads the *dynamic* target libraries — so the
-  target libraries are built both vanilla and dynamic (`RTS ways = "v dyn"`,
-  `shared: True`). The final application instead links statically and runs
-  under `wasmtime`: two different execution paths, both exercised below.
-* **Native work stays native.** `Setup.hs` is compiled with `-W` and runs on
-  the build machine (it collects `git --version` as provenance); the TH splice
-  reads that file plus a catalogue in the interpreter and computes the
-  embedded table.
+| Part | Compiled for | Runs where |
+|---|---|---|
+| GHC & Cabal | build machine | build machine |
+| `Setup.hs` & tools | build machine | build machine |
+| Splice & `dyld.mjs` | `wasm32-unknown-wasi` | in Node on the build machine |
+| Report `.wasm` app | `wasm32-unknown-wasi` | under `wasmtime` |
 
-The application is a small report generator: it reads and validates a
-catalogue **at compile time**, computes Fibonacci residues, embeds the table,
-and offers a CLI using `text` and `containers`. File IO in the splice, process
-IO in native Setup, dependencies on both sides — enough to expose a cross
-compilation mistake without burying it in application code.
-
-This is a Jupyter notebook with a **Python 3 kernel**. Every executable cell
-starts with `%%bash`; Jupyter runs that cell in a fresh shell and a nonzero
-exit fails the cell. Run the cells in order and resolve a failure before
-continuing. Configuration is saved under `CROSS_ROOT`, so it survives kernel
-restarts. From a shell with Jupyter installed:
+Python 3 kernel; every cell starts with `%%bash`, nonzero exit fails it. Run in order; config under `CROSS_ROOT` survives restarts:
 
 ```sh
 jupyter notebook "WASM TH Cross.ipynb"
@@ -75,29 +63,19 @@ jupyter notebook "WASM TH Cross.ipynb"
 md("wasm-th-refs", r"""
 ## References
 
-- Landing page & docs: <https://stable-haskell.github.io/ghc/>
-- Prebuilt-bindist walkthrough (contrast): `wasm-hello.nb` in this repo
-- GHC wasm backend (JSFFI, reactor model): <https://downloads.haskell.org/ghc/latest/docs/users_guide/wasm.html>
-- WASI SDK: <https://github.com/WebAssembly/wasi-sdk>
-- `ghc-wasm-meta` bootstrap: <https://gitlab.haskell.org/ghc/ghc-wasm-meta>
-- Pinned wasi-sdk + libffi-wasm archives: <https://github.com/haskell-wasm/ghc-wasm-bindists>
-- wasmtime: <https://wasmtime.dev/>
+- Docs: <https://stable-haskell.github.io/ghc/>; wasm backend: <https://downloads.haskell.org/ghc/latest/docs/users_guide/wasm.html>
+- Contrast (prebuilt bindist): `wasm-hello.nb`; bootstrap: <https://gitlab.haskell.org/ghc/ghc-wasm-meta>
+- WASI SDK: <https://github.com/WebAssembly/wasi-sdk>; pinned archives: <https://github.com/haskell-wasm/ghc-wasm-bindists>; wasmtime: <https://wasmtime.dev/>
 """)
 
 # ---- 1. environment -------------------------------------------------------
 md("wasm-th-place-md", r"""
 ## 1. A place to build
 
-First we save the paths used by later cells. This is a complete source build,
-so use a fresh tree. Set `CROSS_ROOT` before starting Jupyter to choose a
-location; keep it absolute and free of whitespace. The default
-(`~/cross-ghc-current`) is ignored by git inside this notebook directory.
-
-Unlike the Linux-only recipes, this walkthrough detects the build machine:
-`BUILD_ARCH` (`x86_64` or `aarch64`), `BUILD_OS` (`linux` or `darwin`),
-`BUILD_VENDOR` (`unknown` or `apple`), and `BUILD_PLATFORM`
-(e.g. `aarch64-apple-darwin`) flow into the RTS headers and the `Setup.hs`
-identity check below.
+Fresh source build: set absolute, whitespace-free `CROSS_ROOT` before starting
+Jupyter (default `~/cross-ghc-current`). This cell detects `BUILD_ARCH`,
+`BUILD_OS`, `BUILD_VENDOR`, and `BUILD_PLATFORM`, which flow into the RTS
+headers and the `Setup.hs` identity check.
 """)
 
 code("wasm-th-gate", r"""
@@ -179,25 +157,13 @@ printf 'Build tree: %s\nBuild machine: %s\nTarget: wasm32-unknown-wasi\n' "$CROS
 
 # ---- 2. WASI SDK, libffi, node, wasmtime ----------------------------------
 md("wasm-th-sdk-md", r"""
-## 2. The WASI C/LLVM SDK, wasm `libffi`, `node`, and `wasmtime`
+## 2. WASI SDK, `libffi-wasm`, `node`, `wasmtime`
 
-GHC's wasm settings shell out to `wasm32-unknown-wasi-clang(++)`,
-`wasm32-unknown-wasi-ar`/`-ranlib`/`-nm`, `wasm-ld`, `llc`/`opt`/`llvm-as` —
-none of which the GHC tree bundles. We fetch a WASI SDK plus the wasm
-`libffi` build and bridge the tool names GHC expects.
-
-* On **`x86_64-linux`** we use the pinned `haskell-wasm/ghc-wasm-bindists`
-  `wasi-sdk` + `libffi-wasm` archives (hash-checked; `bootstrap.sh` is the
-  fallback).
-* On **`aarch64-darwin`** and **`aarch64-linux`** we use `ghc-wasm-meta`
-  `bootstrap.sh` (`FLAVOUR=9.12`), which fetches the platform SDK, or the
-  official platform `wasi-sdk` + `libffi-wasm` headers/libs overlaid into the
-  WASI sysroot (`share/wasi-sysroot/{include,lib}/wasm32-wasi`).
-
-`node` (>= 22) hosts the wasm interpreter (`dyld.mjs`) for Template Haskell;
-`wasmtime` runs the final statically linked WASI executable. Both come from
-`PATH` via this flake, with a release-install fallback for `wasmtime` when run
-outside Nix.
+GHC shells out to `wasm32-unknown-wasi-clang(++)`, `-ar`/`-ranlib`/`-nm`,
+`wasm-ld`, `llc`/`opt`/`llvm-as`; we fetch a WASI SDK plus wasm `libffi` and
+bridge those names (`bootstrap.sh` fallback on non-`x86_64-linux`).
+`node` (>= 22) hosts the TH interpreter (`dyld.mjs`); `wasmtime` runs the final
+statically linked WASI executable.
 """)
 
 code("wasm-th-sdk", r"""
@@ -407,23 +373,13 @@ echo "wasi toolchain smoke test ok"
 
 # ---- 3. fetching & building GHC 9.14 + cross-aware Cabal -------------------
 md("wasm-th-fetch-md", r"""
-## 3. Fetching and building GHC 9.14 + cross-aware Cabal
+## 3. Stage 2 native GHC + cross-aware Cabal
 
-We fetch the branch heads (`stable-haskell/ghc#stable-ghc-9.14` and
-`andreabedini/cabal#andrea/feature/cross-compilation-2`) and record the exact
-commits in `sources.lock`. `GHC_REF` and `CABAL_REF` can select another ref
-when reproducing a recorded build. Changing commits afterwards requires a fresh
-`CROSS_ROOT` — compiler artifacts from different revisions must not mix.
-
-At these revisions Cabal needs a small fix before it can bootstrap the target
-libraries: it pins GHC's wired-in units to installed unit IDs, even with
-`allow-boot-library-installs: True`. The next cells permit a *missing*
-wired-in unit to be built only when boot-library installation is explicitly
-enabled; existing installed units keep their exact-unit pins. This is a local
-patch to Andrea's branch, not behaviour of the unmodified branch.
-
-Both builds are cache-aware: `$CABAL` and the stage2 `$DIST/bin/ghc` are
-skipped when already built from the locked sources.
+Fetch `stable-haskell/ghc#stable-ghc-9.14` and
+`andreabedini/cabal#andrea/feature/cross-compilation-2`, recording commits in
+`sources.lock` (fresh `CROSS_ROOT` when changing refs). Cabal gets a local
+wired-in boot-library patch: a *missing* wired-in unit may build only with
+`allow-boot-library-installs: True`; installed units keep exact-unit pins.
 """)
 
 code("wasm-th-checkout", r"""
@@ -551,24 +507,13 @@ done
 
 # ---- 4. wasm target source worktree -----------------------------------------
 md("wasm-th-tree-md", r"""
-## 4. Preparing the wasm target source worktree
+## 4. Wasm target source worktree
 
-We now have a native GHC distribution built from `stable-ghc-9.14` at
-`ghc-src/_build/dist`, plus the native `ghc-toolchain-bin`, `deriveConstants`
-and `genapply` tools. We create a second checkout at the **same** GHC commit
-for the wasm libraries. The vanilla-RTS edit belongs here, after the native
-distribution has been built.
-
-Wasm needs its RTS both vanilla *and* dynamic (`RTS ways = "v dyn"` below), so
-unlike the aarch64 recipe we keep `nonthreaded-nodebug` **and**
-`nonthreaded-nodebug-dynamic` buildable in `rts/rts.cabal` (disabling the
-rest), so `shared: True` works. The configure input for `ghc-boot-th-next` is
-supplied locally; we do not include that package in the target build.
-
-The WASI SDK defines `clockid_t` as an opaque pointer, so `prepare-time-wasm.py`
-adapts the Haskell type (`ClockID = Ptr ()`) and the realtime constant wrapper
-in `time-1.15` to that ABI, following the representation already used in GHC's
-`base`.
+Second checkout at the same GHC commit for the wasm libraries. `rts/rts.cabal`
+keeps `nonthreaded-nodebug` **and** `nonthreaded-nodebug-dynamic` buildable
+(vanilla + dynamic for `shared: True`); the rest are disabled. `time-wasm`
+adapts `time-1.15` to WASI's pointer `clockid_t` (`ClockID = Ptr ()` plus the
+realtime constant wrapper, as in `base`).
 """)
 
 code("wasm-th-tree", r"""
@@ -689,13 +634,10 @@ CROSS_ROOT="$CROSS_ROOT" python3 "$CROSS_ROOT/prepare-time-wasm.py"
 md("wasm-th-target-md", r"""
 ## 5. Teaching GHC about `wasm32-unknown-wasi`
 
-One compiler, another target directory. `ghc-toolchain-bin` generates the
-target's `settings` from our bridge tools; we then advertise dynamic
-libraries (`RTS ways = "v dyn"`, `target is dynamic` / `target ships dynamic
-libraries` = `YES`) so `dyld.mjs` can load `.so` libraries in Node during
-Template Haskell evaluation, copy the wasm interpreter scripts next to the
-settings, and add the `wasm32-unknown-wasi-*` symlinks plus a fresh package
-database. No rebuild of GHC is involved.
+`ghc-toolchain-bin` writes `lib/targets/wasm32-unknown-wasi/lib/settings` from
+the bridge tools, patched to `RTS ways = "v dyn"` with dynamic-library flags
+`YES`. Then install `dyld.mjs`/`prelude.mjs`/`ghc-interp.js` beside it, create
+the `wasm32-unknown-wasi-*` symlinks, and init `package.conf.d`. No GHC rebuild.
 """)
 
 code("wasm-th-target", r"""
@@ -836,19 +778,12 @@ ls "$DIST/lib/targets/wasm32-unknown-wasi/lib/"*.mjs "$DIST/lib/targets/wasm32-u
 
 # ---- 6. building the wasm target libraries ----------------------------------
 md("wasm-th-stage3-md", r"""
-## 6. Building the wasm target libraries (`stage3-wasm`)
+## 6. Wasm target libraries (`stage3-wasm`)
 
-Cabal builds the target libraries with the native compiler as `-W` and the
-wasm compiler as `-w`, from the `$SRC` tree plus the adapted `time-wasm` and
-`ghc-experimental` (the wasm interpreter's dependency). `shared: True` with
-`-tables-next-to-code +dynamic` produces the dynamic libraries `dyld.mjs`
-loads; the `Build*` RTS defines come from `gate.env` so the same recipe works
-on Linux and macOS.
-
-The RTS way goes first: compiling `ghc-internal` before that way is
-registered can leave placeholder RTS unit IDs in its interfaces. Registrations
-are exported into the target `package.conf.d`; the cell is idempotent unless
-`FORCE_STAGE3_REBUILD` is set.
+Cabal builds `$SRC` + `time-wasm` + `ghc-experimental` (the wasm interpreter's
+dependency) with `-w` (wasm) / `-W` (native). `shared: True` with
+`-tables-next-to-code +dynamic` yields the `.so` files `dyld.mjs` loads; the
+RTS way builds first, then registrations export into `package.conf.d`.
 """)
 
 code("wasm-th-stage3", r"""
@@ -1153,25 +1088,13 @@ done
 
 # ---- 7. target context & TH smoke test ---------------------------------------
 md("wasm-th-context-md", r"""
-## 7. Target context and TH smoke test via `dyld.mjs` in Node
+## 7. Target context: TH via `dyld.mjs` in Node
 
-We have one compiler, running on the build machine. Changing its name selects
-the wasm target's settings and libraries — that gives us a way to *produce*
-target code. Template Haskell asks for one more thing: a place to *execute*
-some of that code while the build is still running.
-
-For wasm that place is `dyld.mjs` in Node: GHC sends interpreter requests, and
-Node hosts the wasm modules and implements their dynamic linker. The
-interpreter and its libraries must agree with the compiler's protocol and the
-selected target build — hence the `v dyn` settings and `shared: True`
-libraries above.
-
-A splice doing `runIO (readFile "catalogue.txt")` opens the file in the
-*interpreter's* context, not in GHC's. Here the interpreter (Node) shares the
-build machine's filesystem and working directory, so package-relative input
-names resolve the same way on both sides; `addDependentFile` records inputs for
-recompilation without transferring them. Running the final application is a
-separate check with a different runner (wasmtime).
+`-fexternal-interpreter` executes splices through `dyld.mjs` in Node, which
+hosts the wasm modules and links the `v dyn` / `shared: True` libraries above.
+Node shares the build filesystem, so splice `readFile` paths resolve as usual
+and `addDependentFile` just records inputs. The final app runs separately
+under `wasmtime`.
 """)
 
 code("wasm-th-smoke", r"""
@@ -1205,14 +1128,12 @@ echo "PASS: TH splice evaluated for ($TRIPLE) in Node, ran under wasmtime"
 
 # ---- 8. building & running the cross-report application ----------------------
 md("wasm-th-app-md", r"""
-## 8. Building and running the `cross-report` application
+## 8. Building and running `cross-report`
 
-The report keeps the catalogue validation in the target splice and the tool
-provenance on the build machine: native `Setup.hs` prints its build-machine
-identity and writes `git --version` to `build-tool.txt`; the splice reads
-that file plus `catalogue.txt`, records both as dependent files, validates
-the rows, and computes the embedded values. The executable uses `text` and
-`containers` to print and query the catalogue.
+Native `Setup.hs` (`-W`) prints the build identity and writes `git --version`
+to `build-tool.txt`; the target splice (`TH.hs`, `-w`) validates `catalogue.txt`,
+records both files via `addDependentFile`, and embeds the table. The static
+binary runs under `wasmtime` (`SPLICE_ARCH=` / `RUNTIME_ARCH=` checks below).
 """)
 
 code("wasm-th-app-src", r"""
@@ -1434,13 +1355,11 @@ echo "PASS: cross-report.wasm table, --info, --list and unknown-entry handling"
 
 # ---- 9. negative validation & single-compiler identity ------------------------
 md("wasm-th-final-md", r"""
-## 9. Negative splice validation and the single-compiler identity
+## 9. Negative splice check and the single-compiler identity
 
-Invalid input must fail at compile time, not at runtime: a bad `catalogue.txt`
-is rejected by the splice during TH evaluation in Node. Afterwards we restore
-the catalogue, rebuild, and confirm the target names really select one
-compiler — `wasm32-unknown-wasi-ghc` resolves to the exact same `ghc` binary
-(the hash is unchanged by adding the target).
+A bad `catalogue.txt` must fail at compile time in the Node splice, not at
+runtime; then we rebuild the good catalogue and confirm `wasm32-unknown-wasi-ghc`
+is the same binary as `ghc` (`ONE_GHC_SHA256=`).
 """)
 
 code("wasm-th-negative", r"""
@@ -1500,11 +1419,8 @@ echo "ONE_GHC_SHA256=$EXPECTED"
 md("wasm-th-cleanup-md", r"""
 ## 10. Cleanup
 
-Everything lives under `CROSS_ROOT` (default `~/cross-ghc-current`), next to
-the `ghc-src`, `cabal-src`, SDK, build, and report trees — it is git-ignored
-here. Delete it to start over; the `sources.lock` comparison will stop you
-from mixing revisions in a reused tree. Uncomment the lines below to remove
-the build tree or only the report directory.
+Everything lives under `CROSS_ROOT` (git-ignored). Uncomment below to remove
+just the report or the whole tree; `sources.lock` guards against mixed revisions.
 """)
 
 code("wasm-th-cleanup", r"""

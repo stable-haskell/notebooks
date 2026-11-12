@@ -29,34 +29,15 @@ def code(cid, text):
 md("win-title", r"""
 # Cross Compiling Haskell to Windows with GHC 9.14, Cabal, Wine & iserv-proxy
 
-This notebook cross-compiles Haskell with Template Haskell from source to
-**Windows (`x86_64-w64-mingw32`)** on **both Linux and macOS (`aarch64-darwin`)**,
-using stable-haskell GHC 9.14 and the cross-aware Cabal. Along the way we build the
-Windows target libraries against **LLVM-MinGW UCRT** plus a static UCRT `libffi`,
-bridge GHC's POSIX pipe descriptors to a Windows
-`iserv-proxy-interpreter.exe` running **under Wine** via a native `iserv-proxy`,
-and run the compiled Windows `cross-report.exe` application under Wine.
+Cross-compiles Haskell with Template Haskell to **x86_64-w64-mingw32** on Linux and macOS (`aarch64-darwin`), using stable-haskell GHC 9.14 and cross-aware Cabal.
+Target libraries build against **LLVM-MinGW UCRT** plus static `libffi`; splices run in a Windows `iserv-proxy-interpreter.exe` under Wine; `cross-report.exe` runs under Wine.
+The `cross-report` app validates a catalogue at compile time, embeds Fibonacci residues, and reports `git` provenance collected by native `Setup.hs`.
 
-The application is the same small catalogue report used in the other
-cross-compilation notebooks: it reads and validates a catalogue **at compile
-time**, computes Fibonacci residues, embeds the resulting table, and offers a
-command-line interface using `text` and `containers`. It also embeds the version
-of an external tool, `git`, collected by native `Setup.hs`. That split keeps
-build-machine work on the build machine: native Setup invokes `git` and writes
-`build-tool.txt`; the Windows splice only reads files.
+Three moving parts:
 
-There are two changes worth keeping in mind:
-
-* **GHC selects a target's settings and libraries.** The compiler executable stays
-  native. In this fork, invoking it as `x86_64-w64-mingw32-ghc` selects that
-  target directory.
-* **Cabal accepts compiler commands for both machines.** `-w` selects the
-  compiler for the application and its libraries; `-W` selects the native
-  compiler for setup programs and build tools.
-
-Both GHC commands resolve to the same executable. The target-prefixed name selects
-a different set of settings and libraries. The native and target commands report
-different platforms and use separate package databases.
+1. **Single native GHC binary**: `x86_64-w64-mingw32-ghc` is a symlink to native `ghc` selecting `lib/targets/x86_64-w64-mingw32/lib/{settings,package.conf.d}`.
+2. **Dual-compiler Cabal**: `-w` selects `x86_64-w64-mingw32-ghc` (`host:*`), `-W` selects native `ghc` (`build:*`).
+3. **Target C/CRT & TH execution**: LLVM-MinGW (UCRT) + static UCRT `libffi`, with native `iserv-proxy` bridging POSIX pipes over `--stdio` to `iserv-proxy-interpreter.exe` under headless `wine64`.
 
 | Part | Compiled for | Runs where |
 |---|---|---|
@@ -65,52 +46,24 @@ different platforms and use separate package databases.
 | Splice code and the `iserv` interpreter | Windows x86_64 | Wine on the build machine |
 | Report application and its libraries | Windows x86_64 | Wine here; Windows when deployed |
 
-Cabal calls the application's machine the **host**. GHC calls it the **target**.
+Cabal calls the application machine **host**; GHC calls it **target**.
 
-## Before we start
-
-We use the current [`stable-haskell/ghc:stable-ghc-9.14`](https://github.com/stable-haskell/ghc/tree/stable-ghc-9.14)
-branch and Andrea Bedini's [`andrea/feature/cross-compilation-2`](https://github.com/andreabedini/cabal/tree/andrea/feature/cross-compilation-2)
-branch. We build both from source. A native bootstrap GHC and Cabal are still
-needed to build the tools written in Haskell.
-
-The checkout cell fetches each branch head and records the exact commits in
-`sources.lock`. Use a fresh `CROSS_ROOT` when changing those commits; compiler
-artifacts and package databases from different source revisions should not be
-mixed.
-
-Use a **Linux (x86_64 or aarch64)** or **macOS (arm64)** machine, GNU Make
-**4.4 or newer** (the flake's `gnumake` qualifies on both), and a native GHC
-**9.8.4** plus a working bootstrap `cabal`. Put `ghc-9.8.4` and `cabal` on
-Jupyter's `PATH`, or set `BOOT_GHC` and `BOOT_CABAL` before starting it. Wine must
-be installed (the flake provides it per platform); `WINE_BIN` overrides the
-discovered `wine64`/`wine`. Building the compiler is substantially more work than
-building its target libraries: allow 32 GiB of free disk for a cold build (4 GiB
-suffices to re-run against an existing `$DIST/bin/ghc`), and prefer a machine
-with 16 GiB RAM or more. Set `BUILD_JOBS` for package parallelism (default 4)
-and `GHC_JOBS` for modules within each compiler process (default 2).
-
-This is a Jupyter notebook with a **Python 3 kernel**. Every executable cell
-starts with `%%bash`; Jupyter runs that cell in a fresh shell and reports a
-non-zero exit as a failed cell. Run the cells in order and resolve a failure
-before continuing. Configuration is saved under `CROSS_ROOT`, so it survives
-kernel restarts.
+Prerequisites:
+- `CROSS_ROOT`: absolute, whitespace-free tree root holding `gate.env` and all builds.
+- `GHC_REF`/`CABAL_REF`: override default branch heads; resolved commits recorded in `sources.lock`.
+- Run via `nix develop` for Wine, Make, and the bootstrap toolchain.
 """)
 
 # ---- 1. environment -------------------------------------------------------
 md("win-env-md", r"""
 ## 1. Environment & `gate.env`
 
-First we save the paths used by later cells. This is a complete source build, so
-use a fresh tree. Set `CROSS_ROOT` before starting Jupyter to choose a location;
-keep it absolute and free of whitespace.
-
-The build machine is detected dynamically: `BUILD_ARCH` is `x86_64` or `aarch64`
-(the latter covers both `arm64` and `aarch64` uname spellings), `BUILD_OS` is
-`linux` or `darwin`, and `BUILD_VENDOR`/`BUILD_PLATFORM` follow GHC's platform
-triples (`unknown`/`x86_64-unknown-linux` on Linux, `apple`/`aarch64-apple-darwin`
-on Apple Silicon). The native GHC source and the Windows target-library source
-use separate trees.
+`CROSS_ROOT` roots the build; `gate.env` pins `DIST`, `SRC`, `STAGE3`, `LLVM_MINGW`, `FFI_PREFIX`, and `WINEPREFIX`.
+Detected build platform (`BUILD_ARCH`, `BUILD_OS`, `BUILD_VENDOR`, `BUILD_PLATFORM`) drives per-machine `Build*` flags.
+Native GHC and Windows target-library sources live in separate trees (`ghc-src`, `ghc-target-src-windows`).
+`BOOT_GHC`/`BOOT_CABAL` supply the bootstrap toolchain; `BUILD_JOBS`/`GHC_JOBS` set package and module parallelism.
+A disk check guards cold builds versus re-runs against an existing `$DIST/bin/ghc`; `cross_enter()` resets `CC`/`CXX` per cell.
+Configuration is saved under `CROSS_ROOT`, so it survives kernel restarts; run cells in order.
 """)
 
 code("win-env", r"""
@@ -195,31 +148,15 @@ printf 'Build: %s-%s (%s); tree: %s; disk allowance: %s GiB\n' \
 
 # ---- 2. windows C toolchain, libffi, wine -------------------------------
 md("win-sdk-md", r"""
-## 2. The Windows C toolchain (LLVM-MinGW UCRT), static UCRT `libffi`, and Wine
+## 2. Windows C toolchain (LLVM-MinGW UCRT), static UCRT `libffi`, and Wine
 
-GHC's Windows target needs a MinGW-w64 C toolchain that agrees with the RTS on
-the C runtime. We use an **LLVM-MinGW UCRT** SDK (tag `20261104`): UCRT is the
-modern Windows CRT, and Debian's default MSVCRT toolchain fails on the Windows
-RTS symbols in this checkout.
-
-The SDK layout is platform-aware. A preinstalled `x86_64-w64-mingw32-clang` on
-`PATH` wins over the download everywhere. Otherwise we fetch the release asset
-for this build machine and verify its bytes before extracting:
-
-| Build machine | LLVM-MinGW asset |
-|---|---|
-| `x86_64-linux` | `llvm-mingw-20261104-ucrt-ubuntu-22.04-x86_64.tar.xz` (hash-pinned) |
-| `aarch64-linux` | `llvm-mingw-20261104-ucrt-ubuntu-22.04-aarch64.tar.xz` |
-| `aarch64-darwin` / `x86_64-darwin` | `llvm-mingw-20261104-ucrt-macos-universal.tar.xz` |
-
-The TH interpreter needs a target `libffi`. We cross-compile static
-`libffi-3.4.8` for `--host=x86_64-w64-mingw32` with that same UCRT toolchain into
-`$CROSS_ROOT/windows-ffi-ucrt` (skipped when `libffi.a` is already there).
-
-Wine supplies the Windows API on the build machine. We run it with a clean,
-isolated `WINEPREFIX` under `$CROSS_ROOT/wineprefix` — never `~/.wine` — with
-`WINEDLLOVERRIDES="mscoree,mshtml=;winemac.drv=d"` and `WINEDEBUG="-all"` so
-`wine64` runs headless without GUI/Gecko/Mono prompts or pointer aborts.
+LLVM-MinGW UCRT SDK (`20261104`, per-platform asset, hash-verified) supplies the target cc/cxx/ar/ranlib/nm/windres; UCRT matches the Windows RTS symbols here.
+Debian's default MSVCRT toolchain is avoided for the same reason.
+A preinstalled `x86_64-w64-mingw32-clang` on `PATH` wins over the download everywhere.
+Static `libffi-3.4.8` is configured for `--host=x86_64-w64-mingw32` with that UCRT toolchain and installed into `windows-ffi-ucrt`.
+The install is skipped when `libffi.a` already exists.
+Wine runs under an isolated `WINEPREFIX` (`$CROSS_ROOT/wineprefix`, never `~/.wine`) with `WINEDLLOVERRIDES` and `WINEDEBUG="-all"` for headless runs.
+`wineboot --init` primes the prefix; UCRT DLLs are staged into `drive_c/windows/system32`.
 """)
 
 code("win-sdk", r"""
@@ -373,27 +310,14 @@ echo "Wine prefix ready at $WINEPREFIX"
 
 # ---- 3. fetch & build GHC 9.14 + cross-aware Cabal -----------------------
 md("win-fetch-md", r"""
-## 3. Fetching & building GHC 9.14 + cross-aware Cabal
+## 3. Stage 2 native GHC + cross-aware Cabal
 
-Let us fetch the source we actually want to use. The branch names are defaults,
-so a fresh checkout follows their current heads. `sources.lock` records the
-resolved commits. `GHC_REF` and `CABAL_REF` can select another ref when
-reproducing a recorded build.
-
-There are two Cabal roles during compiler construction. GHC's Makefile
-bootstraps a Cabal from its own `cabal.project.stage0`; that builder implements
-the local store layout its rules expect. The Cabal we build from **Andrea's
-branch** is the one we use for target libraries and the application.
-
-At the branch heads tested here, Cabal needs a small fix before it can bootstrap
-the target libraries. It pins GHC's wired-in units to installed unit IDs, even
-with `allow-boot-library-installs: True`. Our new target database has no
-`ghc-internal` yet. The next cell permits a missing wired-in unit to be built
-only when boot-library installation is explicitly enabled — a local patch to
-Andrea's branch, not behaviour we attribute to the unmodified branch.
-
-**Cache-aware:** cells skip rebuilding `$CABAL` and `$DIST/bin/ghc` when they
-already exist and match `sources.lock`. Set `FORCE_REBUILD=1` to rebuild anyway.
+Builds native stage 2 GHC from `stable-haskell/ghc:stable-ghc-9.14` and Cabal from `andrea/feature/cross-compilation-2`.
+GHC's Makefile uses its own pinned stage0 Cabal builder; the Andrea-branch Cabal builds the target libraries and the app.
+A wired-in boot-library patch lets Cabal build a missing wired-in unit (e.g. `ghc-internal`) only with `allow-boot-library-installs: True`.
+Existing installed wired-in unit IDs keep their exact-unit pins.
+Commits are pinned in `sources.lock`; rebuild is skipped when `$CABAL` and `$DIST/bin/ghc` already match (`FORCE_REBUILD=1` overrides).
+Use a fresh `CROSS_ROOT` when changing commits; never mix databases across revisions.
 """)
 
 code("win-fetch", r"""
@@ -510,18 +434,13 @@ fi
 
 # ---- 4. windows target source worktree -----------------------------------
 md("win-tree-md", r"""
-## 4. Preparing the Windows target source worktree
+## 4. Windows target source worktree
 
-We now have a native GHC distribution built from `stable-ghc-9.14`, and a Cabal
-built from Andrea's cross-compilation branch. Let us create a second checkout at
-**the same GHC commit** for the Windows libraries. The vanilla-RTS edit belongs
-here, after the native distribution has been built. The configure input for
-`ghc-boot-th-next` is supplied locally; we do not include that package in the
-target build.
-
-The RTS's three other sublibraries contain `buildable: False` inside JavaScript,
-wasm and profiling conditionals. We insert an unconditional field after each
-sublibrary's `import` to disable those ways for this target build.
+Second checkout at the same GHC commit holds the Windows libraries; `ghc-boot-th-next` is staged locally and excluded from the target build.
+`rts/rts.cabal` is restricted to the vanilla `v` way: the three non-vanilla sublibraries get unconditional `buildable: False`.
+Only the vanilla RTS archive feeds the later `stage3` link, keeping the Windows RTS static and unprofiled.
+Target `configure` inputs are generated in place (`autoreconf`) before the Cabal build.
+The edit lands after the native dist exists, so the bootstrap build is unaffected.
 """)
 
 code("win-tree", r"""
@@ -586,18 +505,12 @@ PY_PATCH
 md("win-settings-md", r"""
 ## 5. Teaching GHC about `x86_64-w64-mingw32`
 
-Run `ghc-toolchain-bin` from the source tree, where it can find `config.sub`. We
-supply the LLVM-MinGW UCRT C and C++ compilers, archiver, ranlib and nm, and ask
-for a `settings` file with the explicit `--target-prefix x86_64-w64-mingw32-`.
-
-The generated settings contain `cross compiling = NO` and a fixed list of RTS
-ways. Those fields are hardcoded by this version of ghc-toolchain. We overwrite
-the RTS ways with `v` and set all four dynamic/profiled properties to `NO` for
-our static, unprofiled Windows target libraries.
-
-The target-prefixed symlinks — `x86_64-w64-mingw32-{ghc,ghc-pkg,hsc2hs}` — let
-one compiler executable select the Windows settings and package database;
-`unlit` runs on the build machine even when processing target sources.
+`ghc-toolchain-bin --triple=x86_64-w64-mingw32` (LLVM-MinGW UCRT cc/cxx/ar/ranlib/nm, `--target-prefix x86_64-w64-mingw32-`) writes `lib/targets/x86_64-w64-mingw32/lib/settings`.
+Hardcoded `ghc-toolchain` fields are corrected: RTS ways forced to `v`, dynamic/profiled properties set to `NO` for the static target.
+Target-prefixed symlinks (`x86_64-w64-mingw32-{ghc,ghc-pkg,hsc2hs}`) select the Windows settings and package database from one binary.
+`unlit` is shared into the target bindir since it always runs on the build machine.
+Selected target verified via `--print-libdir` for both the symlink and `-target=` spellings.
+`deriveConstants`/`genapply` paths are recorded; `NM`/`OBJDUMP` point at the UCRT toolchain for the stage3 build.
 """)
 
 code("win-settings", r"""
@@ -682,26 +595,12 @@ echo "settings ok"
 md("win-stage3-md", r"""
 ## 6. Building the Windows target libraries (`stage3-windows`)
 
-Here we use Andrea's Cabal with two compiler configurations. `-w` selects
-`x86_64-w64-mingw32`; `-W` selects native GHC for setup programs and build tools.
-The `build:any.<package> installed` constraints keep native boot dependencies
-installed. Unprefixed top-level `source` constraints select the target boot
-libraries from source.
-
-We put common target compiler options and static-library choices in
-`package host:*`. Named package stanzas carry the individual flags: `Win32`
-replaces `unix` (with `+os-string`), `hsc2hs-0.68.10` joins as an explicit
-target build tool, and `package rts` points at the UCRT `libffi` we built in §2
-via `extra-include-dirs`/`extra-lib-dirs`. The `Cabal-syntax` and `alex` tarballs
-stay; `process` is requested explicitly because merely listing its tarball does
-not put it in the selected dependency closure. The `Build*` CPP defines follow
-this build machine (`$BUILD_ARCH`/`$BUILD_OS`/`$BUILD_PLATFORM`); the `Host*`
-defines describe Windows.
-
-We provide an explicit Cabal store under `stage3-windows/store` and register only
-the host library units selected by the build plan's `machine` field. The cell is
-idempotent: when the target database already serves `base` and
-`FORCE_STAGE3_REBUILD` is unset, the expensive rebuild is skipped.
+Dual-compiler build: `-w x86_64-w64-mingw32-ghc` for `host:*`, `-W ghc` for `build:*` (plus matching `--with-hc-pkg`/`--with-build-hc-pkg` and `--with-gcc`).
+Native boot deps stay `installed` (`build:any.* installed`); target boot libraries stay `source`.
+`Win32` (+`os-string`) replaces `unix`; `package rts` points at the static UCRT `libffi` via `extra-include-dirs`/`extra-lib-dirs` with `Build*`/`Host*` CPP defines.
+The non-threaded RTS way builds first so `ghc-internal` interfaces lose no placeholder RTS unit IDs.
+Only plan units with `"machine": "host"` register into the target `package.conf.d`; skips when `base` is already registered.
+Cabal store lives under `stage3-windows/store`; cached `exported-conf` restores existing registrations.
 """)
 
 code("win-stage3", r"""
@@ -981,20 +880,13 @@ done
 
 # ---- 7. iserv-proxy + wine TH smoke test ---------------------------------
 md("win-proxy-md", r"""
-## 7. Building `iserv-proxy` (native proxy + Windows interpreter) & Wine TH smoke test
+## 7. `iserv-proxy` + Windows interpreter & Wine TH smoke test
 
-A splice needs to execute Windows code while GHC itself stays a native process.
-The interpreter is therefore itself a Windows executable,
-`iserv-proxy-interpreter.exe`, while a native `iserv-proxy` bridges GHC's POSIX
-pipe descriptors to the interpreter's standard streams. Wine supplies the Windows
-API on the build machine.
-
-We build the native proxy with the native compiler and the Windows interpreter
-with the target compiler plus the native compiler as `-W`. The
-`$CROSS_ROOT/bin/windows-runner` wrapper owns the isolated `WINEPREFIX` and
-connects the two sides over `--stdio`. The smoke test compiles `Arch.hs` — whose
-splice lifts the *target* `(arch, os)` pair — and runs the resulting `arch.exe`
-under Wine.
+Native `iserv-proxy` (native `ghc`) plus Windows `iserv-proxy-interpreter.exe` (target `ghc` + native `ghc` as `-W`), joined by `windows-runner --stdio` under Wine.
+The wrapper owns the isolated `WINEPREFIX` and bridges GHC's POSIX pipe descriptors to the interpreter's stdio (`--no-load-call`).
+UCRT `rtsExtraSyms()` entries are registered in `cbits/symbols.x86_64-windows.c` so CRT calls like `_fstat64i32` and `_errno` resolve against `ucrtbase.dll`, not `msvcrt.dll` under Wine.
+Smoke test: an `Arch.hs` splice lifts target `(arch, os)`; `arch.exe` must print `("x86_64","mingw32")`.
+Proxy and interpreter build from `iserv-proxy-src` with matching `network`/`hsc2hs` deps.
 """)
 
 code("win-proxy", r"""
@@ -1253,41 +1145,14 @@ echo "Wine TH smoke test passed."
 
 # ---- 8. cross-report application ------------------------------------------
 md("win-app-md", r"""
-## 8. Building & running the `cross-report` application
+## 8. Building & running `cross-report.exe`
 
-On to the application. We keep the Fibonacci generator in a separate module:
-imported functions can be used in a top-level splice, while moving the generator
-into the module containing that splice runs into the usual Template Haskell
-stage restriction.
-
-Our catalogue has a label and an index on each line. The generator checks the
-labels, bounds the index, rejects duplicate labels, and records the file as a
-compilation dependency. It computes the residues and embeds ordinary Haskell
-values. Native `Setup.hs` records `git --version` in `build-tool.txt`; the
-Windows splice reads and tracks that file too. Both inputs use relative paths
-from the package source directory, shared into the interpreter's context. The
-interpreter needs file IO and computation for this report — not `git`, a shell,
-or child-process support.
-
-Here is the application build. `-w` selects `x86_64-w64-mingw32`. `-W` selects
-the native compiler. `Setup.hs` imports Cabal and `process`; it is compiled with
-the build compiler and invokes native `git`. `TH.hs` uses target
-`template-haskell` and reads the prepared files in the Windows interpreter under
-Wine. Do not export a cross `CC` globally: the target C compiler lives in the
-target settings.
-
-The build log must contain `BUILD_MACHINE_ARCH=$BUILD_ARCH` (and
-`BUILD_MACHINE_OS=$BUILD_OS`). A first build has work to do; the validation
-cell below cleans this small application build before collecting its evidence.
-It leaves the expensive library build in place.
-
-Expected catalogue output, in map order:
-
-```text
-century=9261915075
-large=3428746875
-small=55
-```
+Native `Setup.hs` runs on the build machine (`BUILD_MACHINE_ARCH`/`OS` in the log, `git --version` into `build-tool.txt`).
+`TH.hs` runs in the Windows interpreter under Wine (`-fexternal-interpreter`, `-pgmi windows-runner`); target C compiler stays in target settings (no cross `CC` export).
+Splice validates labels/indices, rejects duplicates, tracks both files via `addDependentFile`, and embeds residues plus `SPLICE_ARCH`/`RUNTIME_ARCH`.
+`--info` must show `SPLICE_ARCH=x86_64`, `SPLICE_OS=mingw32`, `RUNTIME_ARCH=x86_64`, `RUNTIME_OS=mingw32`, `BUILD_TOOL=git version ...`.
+Expected catalogue output in map order: `century=9261915075`, `large=3428746875`, `small=55`.
+Build log must contain `BUILD_MACHINE_ARCH`/`OS`; unknown labels fail with `Unknown catalogue entry: unknown`.
 """)
 
 code("win-app-build", r"""
@@ -1512,13 +1377,12 @@ echo "Cross compilation checks passed."
 
 # ---- 9. negative splice + single-compiler identity ------------------------
 md("win-negative-md", r"""
-## 9. Negative splice validation & single-compiler identity check
+## 9. Negative splice & single-compiler identity
 
-Two last checks. First, give the generator a bad catalogue: `addDependentFile`
-should make GHC revisit the splice, and validation must fail during compilation.
-The cell restores the catalogue and rebuilds. Second, confirm there is still one
-compiler throughout: the target-prefixed `x86_64-w64-mingw32-ghc` resolves to the
-exact same `ghc` binary, and its hash is unchanged.
+A bad catalogue must fail compilation (`expected LABEL INDEX (0..100000)`) because the `addDependentFile` splice is revisited; the good catalogue is then restored and rebuilt.
+`large` still reports `3428746875` after the rebuild.
+`x86_64-w64-mingw32-ghc` is the same binary as `ghc`; identity reported as `ONE_GHC_SHA256`.
+Wineserver is stopped after each Wine run to leave no server behind.
 """)
 
 code("win-negative", r"""

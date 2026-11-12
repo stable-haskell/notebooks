@@ -169,6 +169,11 @@ jobs:
     needs: [plan]
     if: needs.plan.outputs.has_linux == 'true'
     timeout-minutes: 360
+    outputs:
+      include_linux: ${{ needs.plan.outputs.include_linux }}
+      flake_hash: ${{ needs.plan.outputs.flake_hash }}
+      ghc_commit: ${{ needs.plan.outputs.ghc_commit }}
+      cabal_commit: ${{ needs.plan.outputs.cabal_commit }}
     steps:
       - uses: actions/checkout@v6
         with:
@@ -285,6 +290,11 @@ jobs:
     needs: [plan]
     if: needs.plan.outputs.has_macos == 'true'
     timeout-minutes: 360
+    outputs:
+      include_macos: ${{ needs.plan.outputs.include_macos }}
+      flake_hash: ${{ needs.plan.outputs.flake_hash }}
+      ghc_commit: ${{ needs.plan.outputs.ghc_commit }}
+      cabal_commit: ${{ needs.plan.outputs.cabal_commit }}
     steps:
       - uses: actions/checkout@v6
         with:
@@ -389,14 +399,13 @@ jobs:
   # base cache is read back identically everywhere.
   validate-linux:
     name: ${{ matrix.target }} (x86_64-linux)
-    needs: [plan, base-toolchain-linux]
+    needs: [base-toolchain-linux]
     runs-on: ubuntu-24.04
-    if: needs.plan.outputs.has_linux == 'true'
     timeout-minutes: 360
     strategy:
       fail-fast: false
       matrix:
-        include: ${{ fromJson(needs.plan.outputs.include_linux) }}
+        include: ${{ fromJson(needs.base-toolchain-linux.outputs.include_linux) }}
     steps:
       - uses: actions/checkout@v6
         with:
@@ -464,7 +473,7 @@ jobs:
             ~/cross-ghc-current/deriveConstants.path
             ~/cross-ghc-current/genapply.path
             ~/cross-ghc-current/ghc-toolchain-bin.path
-          key: th-cross-base-${{ matrix.arch }}-${{ needs.plan.outputs.flake_hash }}-${{ needs.plan.outputs.ghc_commit }}-${{ needs.plan.outputs.cabal_commit }}
+          key: th-cross-base-${{ matrix.arch }}-${{ needs.base-toolchain-linux.outputs.flake_hash }}-${{ needs.base-toolchain-linux.outputs.ghc_commit }}-${{ needs.base-toolchain-linux.outputs.cabal_commit }}
 
       # Per-target cache: the target's installed library tree
       # (stage3-<target>) plus the downloaded SDKs (pinned tarballs in
@@ -484,13 +493,13 @@ jobs:
             ~/cross-ghc-current/llvm-mingw-ucrt
             ~/cross-ghc-current/node-dist-*
             ~/cross-ghc-current/windows-ffi-ucrt
-          key: th-cross-stage3-v2-${{ matrix.target }}-${{ matrix.arch }}-${{ needs.plan.outputs.flake_hash }}-${{ needs.plan.outputs.ghc_commit }}-${{ needs.plan.outputs.cabal_commit }}
+          key: th-cross-stage3-v2-${{ matrix.target }}-${{ matrix.arch }}-${{ needs.base-toolchain-linux.outputs.flake_hash }}-${{ needs.base-toolchain-linux.outputs.ghc_commit }}-${{ needs.base-toolchain-linux.outputs.cabal_commit }}
 
       - name: Execute the notebook
         working-directory: ${{ matrix.dir }}
         env:
-          GHC_REF: ${{ needs.plan.outputs.ghc_commit }}
-          CABAL_REF: ${{ needs.plan.outputs.cabal_commit }}
+          GHC_REF: ${{ needs.base-toolchain-linux.outputs.ghc_commit }}
+          CABAL_REF: ${{ needs.base-toolchain-linux.outputs.cabal_commit }}
         run: |
           set -uo pipefail
           # The shared base tree restored above; the cells default to this
@@ -560,21 +569,20 @@ jobs:
             ~/cross-ghc-current/llvm-mingw-ucrt
             ~/cross-ghc-current/node-dist-*
             ~/cross-ghc-current/windows-ffi-ucrt
-          key: th-cross-stage3-v2-${{ matrix.target }}-${{ matrix.arch }}-${{ needs.plan.outputs.flake_hash }}-${{ needs.plan.outputs.ghc_commit }}-${{ needs.plan.outputs.cabal_commit }}
+          key: th-cross-stage3-v2-${{ matrix.target }}-${{ matrix.arch }}-${{ needs.base-toolchain-linux.outputs.flake_hash }}-${{ needs.base-toolchain-linux.outputs.ghc_commit }}-${{ needs.base-toolchain-linux.outputs.cabal_commit }}
 
   # ── Stage 2: validate each notebook (macOS) ────────────────────────────
   # Same as above, on macOS. Split from Linux so a macOS issue never
   # blocks Linux validation.
   validate-macos:
     name: ${{ matrix.target }} (aarch64-darwin)
-    needs: [plan, base-toolchain-macos]
+    needs: [base-toolchain-macos]
     runs-on: macos-15
-    if: needs.plan.outputs.has_macos == 'true'
     timeout-minutes: 360
     strategy:
       fail-fast: false
       matrix:
-        include: ${{ fromJson(needs.plan.outputs.include_macos) }}
+        include: ${{ fromJson(needs.base-toolchain-macos.outputs.include_macos) }}
     steps:
       - uses: actions/checkout@v6
         with:
@@ -634,7 +642,7 @@ jobs:
             ~/cross-ghc-current/deriveConstants.path
             ~/cross-ghc-current/genapply.path
             ~/cross-ghc-current/ghc-toolchain-bin.path
-          key: th-cross-base-${{ matrix.arch }}-${{ needs.plan.outputs.flake_hash }}-${{ needs.plan.outputs.ghc_commit }}-${{ needs.plan.outputs.cabal_commit }}
+          key: th-cross-base-${{ matrix.arch }}-${{ needs.base-toolchain-macos.outputs.flake_hash }}-${{ needs.base-toolchain-macos.outputs.ghc_commit }}-${{ needs.base-toolchain-macos.outputs.cabal_commit }}
 
       # Per-target cache: the target's installed library tree
       # (stage3-<target>) plus the downloaded SDKs (pinned tarballs in
@@ -655,7 +663,7 @@ jobs:
             ~/cross-ghc-current/node-dist-*
             ~/cross-ghc-current/windows-ffi-ucrt
             ~/cross-ghc-current/wine-macos
-          key: th-cross-stage3-v2-${{ matrix.target }}-${{ matrix.arch }}-${{ needs.plan.outputs.flake_hash }}-${{ needs.plan.outputs.ghc_commit }}-${{ needs.plan.outputs.cabal_commit }}
+          key: th-cross-stage3-v2-${{ matrix.target }}-${{ matrix.arch }}-${{ needs.base-toolchain-macos.outputs.flake_hash }}-${{ needs.base-toolchain-macos.outputs.ghc_commit }}-${{ needs.base-toolchain-macos.outputs.cabal_commit }}
 
       - name: Start Linux runner fallback when macOS VM lacks HVF (aarch64)
         if: matrix.target == 'aarch64'
@@ -666,7 +674,10 @@ jobs:
           fi
           echo "kern.hv_support=0 on this macOS VM — installing cached lima + qemu via Nix and starting Alpine runner"
           nix profile install nixpkgs#lima nixpkgs#qemu
-          limactl start --name=a64runner --vm-type=qemu --mount-writable --tty=false template://alpine
+          limactl start --name=a64runner --vm-type=qemu --mount-writable --tty=false template://alpine || {
+            limactl delete -f a64runner 2>/dev/null || true
+            limactl start --name=a64runner --vm-type=qemu --mount-writable --tty=false template://alpine
+          }
           echo "AARCH64_LINUX_VM=a64runner" >> "$GITHUB_ENV"
 
       - name: Install Rosetta 2 for Wine (windows on macOS)
@@ -677,8 +688,8 @@ jobs:
       - name: Execute the notebook
         working-directory: ${{ matrix.dir }}
         env:
-          GHC_REF: ${{ needs.plan.outputs.ghc_commit }}
-          CABAL_REF: ${{ needs.plan.outputs.cabal_commit }}
+          GHC_REF: ${{ needs.base-toolchain-macos.outputs.ghc_commit }}
+          CABAL_REF: ${{ needs.base-toolchain-macos.outputs.cabal_commit }}
         run: |
           set -uo pipefail
           # The shared base tree restored above; the cells default to this
@@ -752,4 +763,4 @@ jobs:
             ~/cross-ghc-current/node-dist-*
             ~/cross-ghc-current/windows-ffi-ucrt
             ~/cross-ghc-current/wine-macos
-          key: th-cross-stage3-v2-${{ matrix.target }}-${{ matrix.arch }}-${{ needs.plan.outputs.flake_hash }}-${{ needs.plan.outputs.ghc_commit }}-${{ needs.plan.outputs.cabal_commit }}
+          key: th-cross-stage3-v2-${{ matrix.target }}-${{ matrix.arch }}-${{ needs.base-toolchain-macos.outputs.flake_hash }}-${{ needs.base-toolchain-macos.outputs.ghc_commit }}-${{ needs.base-toolchain-macos.outputs.cabal_commit }}
